@@ -12,3 +12,4 @@ yarn-error.log*
 # Ignore OS/system files
 .DS_Store
 Thumbs.db
+backend/tmp/

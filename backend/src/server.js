@@ -28,6 +28,17 @@ app.use('/api/auth',   rateLimit({ windowMs: 60000, max: 20,  message: { error: 
 app.use('/api/payment',rateLimit({ windowMs: 60000, max: 10,  message: { error: 'Too many payment requests' } }));
 
 // ── Routes ────────────────────────────────────────────────────
+
+const authRoutes       = require('./routes/auth');
+const builderRoutes    = require('./routes/builder');
+const chatRoutes       = require('./routes/chat');
+const leadRoutes       = require('./routes/leads');
+const paymentRoutes    = require('./routes/payment');
+const propertiesRoutes = require('./routes/properties');
+const analyticsRoutes  = require('./routes/analytics');
+const notifRoutes      = require('./routes/notifications');
+const trainingRoutes   = require('./routes/training'); 
+
 app.use('/api/auth',       require('./routes/auth'));
 app.use('/api/builder',    require('./routes/builder'));
 app.use('/api/payment',    require('./routes/payment'));
@@ -35,7 +46,10 @@ app.use('/api/chat',       require('./routes/chat'));
 app.use('/api/leads',      require('./routes/leads'));
 app.use('/api/properties', require('./routes/properties'));
 app.use('/api/analytics',  require('./routes/analytics'));
+app.use('/api/notifications',require('./routes/notifications'));
 app.use('/api/training',   require('./routes/training'));
+
+
 
 // ── Root ──────────────────────────────────────────────────────
 app.get('/', (req, res) => {

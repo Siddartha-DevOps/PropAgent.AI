@@ -1,162 +1,332 @@
+/**
+ * training.js (Routes)
+ * ---------------------
+ * REST API endpoints for PropAgent.AI's RAG knowledge base management.
+ * Builders use these endpoints from the CRM Dashboard to upload training docs.
+ *
+ * LOCATION: backend/src/routes/training.js
+ * STATUS: MODIFIED (full RAG integration added)
+ *
+ * Endpoints:
+ *   POST   /api/training/upload          Upload a PDF/DOCX/TXT file
+ *   POST   /api/training/manual          Add plain text manually
+ *   GET    /api/training/documents       List all training docs for this builder
+ *   GET    /api/training/documents/:id   Get single document details
+ *   DELETE /api/training/documents/:id   Delete document + all its chunks
+ *   POST   /api/training/reindex/:id     Re-process a failed document
+ */
+
 const express = require('express');
 const router = express.Router();
-const { authMiddleware } = require('../middleware/auth');
+const multer = require('multer');
+const path = require('path');
+const fs = require('fs');
 
-// In-memory knowledge base per builder (replace with vector DB in Phase 3b)
-const knowledgeBases = new Map();
+const authMiddleware = require('../middleware/auth');
+const planGate = require('../middleware/planGate');
+const TrainingDoc = require('../models/TrainingDoc');
+const KnowledgeChunk = require('../models/KnowledgeChunk');
+const ragService = require('../services/ragService');
 
-// ── GET /api/training/docs — list uploaded documents ──────────
-router.get('/docs', authMiddleware, (req, res) => {
-  const docs = knowledgeBases.get(req.userId) || [];
-  res.json({ docs: docs.map(d => ({ id: d.id, name: d.name, pages: d.pages, uploadedAt: d.uploadedAt, status: d.status })) });
+// ─── Multer configuration ────────────────────────────────────────────────────
+// Files are temporarily saved to /tmp/uploads before processing
+const UPLOAD_DIR = path.join(__dirname, '../../tmp/uploads');
+if (!fs.existsSync(UPLOAD_DIR)) fs.mkdirSync(UPLOAD_DIR, { recursive: true });
+
+const storage = multer.diskStorage({
+  destination: (req, file, cb) => cb(null, UPLOAD_DIR),
+  filename: (req, file, cb) => {
+    const unique = `${Date.now()}-${Math.round(Math.random() * 1e6)}`;
+    cb(null, `${unique}-${file.originalname}`);
+  },
 });
 
-// ── POST /api/training/upload — upload text content ───────────
-// In Phase 3b, swap this for multer + PDF parsing + Pinecone
-router.post('/upload', authMiddleware, (req, res) => {
-  const { content, fileName, fileType } = req.body;
-
-  if (!content || !fileName) {
-    return res.status(400).json({ error: 'content and fileName are required' });
+const fileFilter = (req, file, cb) => {
+  const allowed = [
+    'application/pdf',
+    'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+    'text/plain',
+  ];
+  if (allowed.includes(file.mimetype)) {
+    cb(null, true);
+  } else {
+    cb(new Error('Only PDF, DOCX, and TXT files are allowed.'), false);
   }
+};
 
-  if (content.length > 500000) {
-    return res.status(400).json({ error: 'Content too large (max 500KB text)' });
-  }
-
-  const docs = knowledgeBases.get(req.userId) || [];
-
-  // Chunk content into 500-word segments for retrieval
-  const chunks = chunkText(content, 500);
-
-  const doc = {
-    id: 'doc_' + Date.now(),
-    name: fileName,
-    type: fileType || 'text',
-    content: content,
-    chunks: chunks,
-    pages: Math.ceil(content.split(' ').length / 250),
-    uploadedAt: new Date().toISOString(),
-    status: 'trained',
-    wordCount: content.split(' ').length,
-  };
-
-  docs.push(doc);
-  knowledgeBases.set(req.userId, docs);
-
-  console.log(`✅ Training doc added for builder ${req.userId}: ${fileName} (${doc.wordCount} words, ${chunks.length} chunks)`);
-
-  res.json({
-    success: true,
-    doc: { id: doc.id, name: doc.name, pages: doc.pages, status: doc.status, wordCount: doc.wordCount },
-    message: `"${fileName}" trained successfully. AI will now use this to answer buyer questions.`
-  });
+const upload = multer({
+  storage,
+  fileFilter,
+  limits: { fileSize: 20 * 1024 * 1024 }, // 20 MB max
 });
 
-// ── POST /api/training/scrape — crawl a URL ───────────────────
-router.post('/scrape', authMiddleware, async (req, res) => {
-  const { url } = req.body;
-  if (!url) return res.status(400).json({ error: 'URL is required' });
+// ─── Helpers ─────────────────────────────────────────────────────────────────
 
-  try {
-    // Basic fetch — in Phase 3b replace with Puppeteer/Playwright
-    const response = await fetch(url, {
-      headers: { 'User-Agent': 'PropAgent.AI Bot/1.0 (site verification)' },
-      signal: AbortSignal.timeout(10000),
-    });
+/**
+ * Derive doc type string from MIME type.
+ */
+function mimeToDocType(mimeType) {
+  if (mimeType === 'application/pdf') return 'pdf';
+  if (mimeType.includes('wordprocessingml')) return 'docx';
+  if (mimeType === 'text/plain') return 'txt';
+  return 'manual';
+}
 
-    if (!response.ok) throw new Error(`HTTP ${response.status}`);
+// ─── All routes require authentication ───────────────────────────────────────
+router.use(authMiddleware);
 
-    const html = await response.text();
+// ─── POST /api/training/upload ───────────────────────────────────────────────
+/**
+ * Upload a PDF / DOCX / TXT document.
+ * The file is processed asynchronously — caller gets a trainingDocId immediately
+ * and polls GET /documents/:id to check when status === 'indexed'.
+ */
+router.post(
+  '/upload',
+  planGate('basic'), // Requires at least a basic plan
+  upload.single('file'),
+  async (req, res) => {
+    try {
+      if (!req.file) {
+        return res.status(400).json({ error: 'No file uploaded.' });
+      }
 
-    // Strip HTML tags, extract text
-    const text = html
-      .replace(/<script[^>]*>[\s\S]*?<\/script>/gi, '')
-      .replace(/<style[^>]*>[\s\S]*?<\/style>/gi, '')
-      .replace(/<[^>]+>/g, ' ')
-      .replace(/\s+/g, ' ')
-      .trim();
+      const builderId = req.user._id;
+      const docType = mimeToDocType(req.file.mimetype);
 
-    if (text.length < 100) throw new Error('Page appears to have no readable content');
+      // Create the TrainingDoc record immediately (status: pending)
+      const trainingDoc = await TrainingDoc.create({
+        builderId,
+        name: req.body.name || req.file.originalname,
+        type: docType,
+        source: req.file.originalname,
+        fileSize: req.file.size,
+        status: 'pending',
+      });
 
-    const docs = knowledgeBases.get(req.userId) || [];
-    const chunks = chunkText(text, 500);
-    const hostname = new URL(url).hostname;
+      // Process asynchronously so the HTTP response is instant
+      setImmediate(async () => {
+        try {
+          await ragService.indexDocument({
+            trainingDocId: trainingDoc._id.toString(),
+            builderId: builderId.toString(),
+            filePath: req.file.path,
+            mimeType: req.file.mimetype,
+            source: req.file.originalname,
+            docType,
+          });
+        } catch (err) {
+          console.error(`[RAG] Indexing failed for ${trainingDoc._id}:`, err.message);
+        }
+      });
 
-    const doc = {
-      id: 'doc_' + Date.now(),
-      name: `${hostname} (crawled)`,
-      type: 'website',
-      content: text,
-      chunks: chunks,
-      pages: Math.ceil(text.split(' ').length / 250),
-      sourceUrl: url,
-      uploadedAt: new Date().toISOString(),
-      status: 'trained',
-      wordCount: text.split(' ').length,
-    };
-
-    docs.push(doc);
-    knowledgeBases.set(req.userId, docs);
-
-    console.log(`✅ URL crawled for builder ${req.userId}: ${url} (${doc.wordCount} words)`);
-
-    res.json({
-      success: true,
-      doc: { id: doc.id, name: doc.name, pages: doc.pages, wordCount: doc.wordCount },
-      message: `"${hostname}" crawled and trained. AI now knows your website content.`
-    });
-  } catch (err) {
-    console.error('Crawl error:', err.message);
-    res.status(500).json({ error: 'Failed to crawl URL', details: err.message });
-  }
-});
-
-// ── DELETE /api/training/docs/:id ─────────────────────────────
-router.delete('/docs/:id', authMiddleware, (req, res) => {
-  const docs = knowledgeBases.get(req.userId) || [];
-  const filtered = docs.filter(d => d.id !== req.params.id);
-  knowledgeBases.set(req.userId, filtered);
-  res.json({ success: true, message: 'Document removed from training' });
-});
-
-// ── EXPORTED: retrieve context for RAG ────────────────────────
-function getRelevantContext(builderId, query, maxChunks = 3) {
-  const docs = knowledgeBases.get(builderId) || [];
-  if (docs.length === 0) return '';
-
-  const queryWords = query.toLowerCase().split(/\s+/).filter(w => w.length > 3);
-  if (queryWords.length === 0) return '';
-
-  // Score each chunk by keyword overlap
-  const scored = [];
-  for (const doc of docs) {
-    for (const chunk of (doc.chunks || [])) {
-      const chunkLower = chunk.toLowerCase();
-      const score = queryWords.reduce((s, w) => s + (chunkLower.includes(w) ? 1 : 0), 0);
-      if (score > 0) scored.push({ text: chunk, score, docName: doc.name });
+      return res.status(202).json({
+        message: 'Document received. Indexing in progress.',
+        trainingDocId: trainingDoc._id,
+        status: 'pending',
+      });
+    } catch (err) {
+      console.error('[Training] Upload error:', err);
+      return res.status(500).json({ error: err.message });
     }
   }
+);
 
-  // Return top chunks
-  scored.sort((a, b) => b.score - a.score);
-  const topChunks = scored.slice(0, maxChunks);
+// ─── POST /api/training/manual ───────────────────────────────────────────────
+/**
+ * Add knowledge manually as plain text (e.g. paste property description).
+ * Useful for quick additions without needing a file.
+ *
+ * Body: { name: string, content: string }
+ */
+router.post('/manual', planGate('basic'), async (req, res) => {
+  try {
+    const { name, content } = req.body;
 
-  if (topChunks.length === 0) return '';
+    if (!name || !content || content.trim().length < 20) {
+      return res
+        .status(400)
+        .json({ error: 'name and content (min 20 chars) are required.' });
+    }
 
-  return '\n\n## PROPERTY KNOWLEDGE BASE (use this to answer buyer questions accurately)\n\n' +
-    topChunks.map((c, i) => `[${c.docName}]\n${c.text}`).join('\n\n---\n\n');
-}
+    const builderId = req.user._id;
 
-function chunkText(text, wordsPerChunk = 500) {
-  const words = text.split(/\s+/);
-  const chunks = [];
-  for (let i = 0; i < words.length; i += wordsPerChunk) {
-    const chunk = words.slice(i, i + wordsPerChunk).join(' ');
-    if (chunk.trim().length > 50) chunks.push(chunk);
+    const trainingDoc = await TrainingDoc.create({
+      builderId,
+      name,
+      type: 'manual',
+      source: 'manual-entry',
+      rawText: content,
+      status: 'pending',
+    });
+
+    setImmediate(async () => {
+      try {
+        await ragService.indexDocument({
+          trainingDocId: trainingDoc._id.toString(),
+          builderId: builderId.toString(),
+          rawText: content,
+          source: 'Manual Entry',
+          docType: 'manual',
+        });
+      } catch (err) {
+        console.error(`[RAG] Manual indexing failed for ${trainingDoc._id}:`, err.message);
+      }
+    });
+
+    return res.status(202).json({
+      message: 'Content received. Indexing in progress.',
+      trainingDocId: trainingDoc._id,
+      status: 'pending',
+    });
+  } catch (err) {
+    console.error('[Training] Manual add error:', err);
+    return res.status(500).json({ error: err.message });
   }
-  return chunks;
-}
+});
+
+// ─── GET /api/training/documents ─────────────────────────────────────────────
+/**
+ * List all training documents for the authenticated builder.
+ * Returns summary info (no rawText or embeddings).
+ */
+router.get('/documents', async (req, res) => {
+  try {
+    const docs = await TrainingDoc.find(
+      { builderId: req.user._id },
+      { rawText: 0 } // Exclude large field from list view
+    )
+      .sort({ createdAt: -1 })
+      .lean();
+
+    return res.json({ documents: docs, total: docs.length });
+  } catch (err) {
+    console.error('[Training] List error:', err);
+    return res.status(500).json({ error: err.message });
+  }
+});
+
+// ─── GET /api/training/documents/:id ─────────────────────────────────────────
+/**
+ * Get details of a single training document.
+ * Includes chunk count and status — used for polling after upload.
+ */
+router.get('/documents/:id', async (req, res) => {
+  try {
+    const doc = await TrainingDoc.findOne({
+      _id: req.params.id,
+      builderId: req.user._id,
+    }).lean();
+
+    if (!doc) {
+      return res.status(404).json({ error: 'Document not found.' });
+    }
+
+    return res.json({ document: doc });
+  } catch (err) {
+    console.error('[Training] Get doc error:', err);
+    return res.status(500).json({ error: err.message });
+  }
+});
+
+// ─── DELETE /api/training/documents/:id ──────────────────────────────────────
+/**
+ * Delete a training document and all its associated knowledge chunks.
+ * The AI agent will no longer have access to this knowledge.
+ */
+router.delete('/documents/:id', async (req, res) => {
+  try {
+    const builderId = req.user._id.toString();
+    const trainingDocId = req.params.id;
+
+    // Verify ownership before deleting
+    const doc = await TrainingDoc.findOne({
+      _id: trainingDocId,
+      builderId: req.user._id,
+    });
+
+    if (!doc) {
+      return res.status(404).json({ error: 'Document not found.' });
+    }
+
+    await ragService.deleteDocument(trainingDocId, builderId);
+
+    return res.json({ message: 'Document and all associated knowledge deleted.' });
+  } catch (err) {
+    console.error('[Training] Delete error:', err);
+    return res.status(500).json({ error: err.message });
+  }
+});
+
+// ─── POST /api/training/reindex/:id ──────────────────────────────────────────
+/**
+ * Re-attempt indexing of a document that previously failed.
+ * Uses the rawText already stored in MongoDB (no re-upload needed).
+ */
+router.post('/reindex/:id', async (req, res) => {
+  try {
+    const doc = await TrainingDoc.findOne({
+      _id: req.params.id,
+      builderId: req.user._id,
+    });
+
+    if (!doc) {
+      return res.status(404).json({ error: 'Document not found.' });
+    }
+
+    if (!doc.rawText) {
+      return res
+        .status(400)
+        .json({ error: 'No stored text to re-index. Please re-upload the file.' });
+    }
+
+    // Reset to pending before re-indexing
+    await TrainingDoc.findByIdAndUpdate(doc._id, {
+      status: 'pending',
+      errorMessage: null,
+    });
+
+    setImmediate(async () => {
+      try {
+        await ragService.indexDocument({
+          trainingDocId: doc._id.toString(),
+          builderId: req.user._id.toString(),
+          rawText: doc.rawText,
+          source: doc.source,
+          docType: doc.type,
+        });
+      } catch (err) {
+        console.error(`[RAG] Re-index failed for ${doc._id}:`, err.message);
+      }
+    });
+
+    return res.json({ message: 'Re-indexing started.', status: 'pending' });
+  } catch (err) {
+    console.error('[Training] Reindex error:', err);
+    return res.status(500).json({ error: err.message });
+  }
+});
+
+// ─── GET /api/training/stats ──────────────────────────────────────────────────
+/**
+ * Get knowledge base stats for the builder's dashboard widget.
+ * Returns: total docs, indexed docs, total chunks
+ */
+router.get('/stats', async (req, res) => {
+  try {
+    const builderId = req.user._id;
+
+    const [totalDocs, indexedDocs, totalChunks] = await Promise.all([
+      TrainingDoc.countDocuments({ builderId }),
+      TrainingDoc.countDocuments({ builderId, status: 'indexed' }),
+      KnowledgeChunk.countDocuments({ builderId }),
+    ]);
+
+    return res.json({ totalDocs, indexedDocs, totalChunks });
+  } catch (err) {
+    console.error('[Training] Stats error:', err);
+    return res.status(500).json({ error: err.message });
+  }
+});
 
 module.exports = router;
-module.exports.getRelevantContext = getRelevantContext;

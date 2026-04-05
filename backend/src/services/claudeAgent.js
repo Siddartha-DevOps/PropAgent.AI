@@ -1,130 +1,217 @@
+/**
+ * claudeAgent.js
+ * ---------------
+ * PropAgent.AI's core AI conversation engine.
+ * Integrates with Anthropic Claude API and injects RAG context
+ * from the builder's uploaded knowledge base before each response.
+ *
+ * LOCATION: backend/src/services/claudeAgent.js
+ * STATUS: MODIFIED (RAG context injection added)
+ *
+ * Flow:
+ *   1. Receive visitor message + conversation history + builderId
+ *   2. Retrieve relevant knowledge chunks via ragService.retrieveContext()
+ *   3. Build a dynamic system prompt using builder config + RAG context
+ *   4. Send to Claude claude-opus-4-5 with full conversation history
+ *   5. Return Claude's reply + metadata for intent scoring
+ */
+
 const Anthropic = require('@anthropic-ai/sdk');
-const { scoreIntent, generateTags } = require('./intentScorer');
+const ragService = require('./ragService');
 
 const client = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY });
 
-const DEFAULT_PROPERTIES = [
-  { name: 'Prestige Skyline',       area: 'Banjara Hills',  type: '3BHK',       priceRange: '95L–1.2Cr',   status: 'Ready to move' },
-  { name: 'Lodha Banjara Grand',    area: 'Banjara Hills',  type: '2&3BHK',     priceRange: '80L–1.1Cr',   status: 'Dec 2025' },
-  { name: 'My Home Avatar',         area: 'Gachibowli',     type: '2&3BHK',     priceRange: '55L–85L',     status: 'Ready to move' },
-  { name: 'Aparna Serene Park',     area: 'Kondapur',       type: '2BHK',       priceRange: '60L–75L',     status: 'Mar 2026' },
-  { name: 'Prestige Jubilee Heights', area: 'Jubilee Hills', type: '4BHK',      priceRange: '1.8Cr–3Cr',   status: 'Ready' },
-  { name: 'Shriram Blue Design',    area: 'Kompally',       type: '2&3BHK',     priceRange: '45L–70L',     status: 'Jun 2026' },
-  { name: 'Aparna Kanopy',          area: 'Manikonda',      type: '3BHK',       priceRange: '72L–95L',     status: 'Ready to move' },
-  { name: 'Lodha Bellissimo',       area: 'Jubilee Hills',  type: '4BHK Villa', priceRange: '2.2Cr–4Cr',   status: 'Under construction' },
-];
+// ─── Claude model to use ─────────────────────────────────────────────────────
+const CLAUDE_MODEL = 'claude-opus-4-5';
+const MAX_TOKENS = 1024;
 
-function buildSystemPrompt(config = {}, ragContext = '') {
-  const properties = config.properties || DEFAULT_PROPERTIES;
-  const agentName  = config.agentName  || 'PropAgent';
-  const company    = config.company    || 'a premium real estate developer';
+// ─── System prompt builder ────────────────────────────────────────────────────
 
-  return `You are ${agentName}, a friendly and intelligent AI property advisor for ${company}.
-Your goal is to have a natural, warm conversation with website visitors to understand their property needs and qualify them as potential buyers.
+/**
+ * Build the dynamic system prompt for this conversation.
+ * Injects:
+ *  - Builder's brand name and tone
+ *  - Retrieved RAG knowledge as context
+ *  - Visitor qualification instructions
+ *  - Lead capture instructions
+ *
+ * @param {Object} builderConfig  - Builder settings from the DB
+ * @param {string} ragContext     - Top-K relevant chunks from knowledge base
+ * @returns {string}              - Complete system prompt for Claude
+ */
+function buildSystemPrompt(builderConfig, ragContext) {
+  const brand = builderConfig?.brandName || 'this real estate developer';
+  const tone = builderConfig?.tone || 'professional, warm, and helpful';
+  const language = builderConfig?.language || 'English';
 
-## YOUR PERSONALITY
-- Warm, professional, genuinely helpful — never pushy or salesy
-- Conversational human tone — 2-3 sentences max per reply
-- Use Indian context naturally (lakhs/crores, Indian city names, EMI, RERA)
-- Celebrate their answers: "Excellent choice!", "Smart decision!"
+  // Base identity
+  let prompt = `You are PropAgent, an expert AI sales assistant for ${brand}.
+Your role is to help website visitors find their ideal property, answer questions, and guide them toward booking a site visit.
+Tone: ${tone}. Language: ${language}.
 
-## YOUR QUALIFICATION MISSION — Discover these 6 signals naturally:
-1. Budget — price range in lakhs/crores
-2. Location — preferred area/neighborhood
-3. Property Type — 1BHK/2BHK/3BHK/4BHK/Villa/Plot
-4. Timeline — how soon they need it
-5. Financing — home loan, self-funded, or undecided
-6. Contact — name, phone, email
+CORE RESPONSIBILITIES:
+1. Answer property-related questions using the knowledge base provided below.
+2. Recommend suitable properties based on visitor preferences (budget, location, BHK type, lifestyle).
+3. Qualify buyer intent by gently asking about budget, timeline, family size, and purpose (investment vs self-use).
+4. Collect the visitor's name and phone number before ending the conversation.
+5. If a visitor seems highly interested, encourage them to book a site visit or call.
 
-## CONVERSATION RULES
-- Ask ONE question at a time only
-- Never sound like a form or questionnaire
-- If asked about EMI: calculate using formula: EMI = P × r × (1+r)^n / ((1+r)^n - 1)
-  where r = monthly interest rate, n = loan tenure months. Example: ₹80L at 8.5% for 20 years = ₹69,496/month
-- If asked about RERA, stamp duty, or registration: provide accurate general guidance
+LEAD QUALIFICATION SIGNALS TO WATCH FOR:
+- Mentions specific budget range → HIGH interest
+- Asks about possession date or handover timeline → HIGH interest
+- Asks about EMI or home loan → HIGH interest
+- Asks about floor plan or specific unit → HIGH interest
+- Just browsing or comparing multiple projects → MEDIUM interest
+- No budget clarity and vague requirements → LOW interest
 
-## PROPERTY INVENTORY
-${properties.map(p => `- ${p.name} — ${p.area} — ${p.type} — ₹${p.priceRange} — ${p.status}`).join('\n')}
+RULES:
+- Never make up property details. Only use information from the knowledge base below.
+- If you don't know something, say "Let me connect you with our sales team for this detail."
+- Always be polite. Never pressure the visitor.
+- Keep responses concise (2-4 sentences). Avoid walls of text.
+- After 3-4 exchanges, try to collect the visitor's name and phone number.
+`;
+
+  // Inject RAG context if available
+  if (ragContext && ragContext.trim().length > 0) {
+    prompt += `
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+KNOWLEDGE BASE (use this to answer questions):
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 ${ragContext}
-
-## EXTRACTION — Append after EVERY response (hidden from user):
-<<<EXTRACTED:{"name":null,"phone":null,"email":null,"budget":{"min":null,"max":null},"location":null,"propertyType":null,"timeline":null,"financing":null,"recommendedProperties":[]}>>>
-
-Always include this block. Update fields the moment info is mentioned.
-Financing values: "pre_approved", "home_loan", "self_funded", "undecided"
-Timeline examples: "1 month", "3 months", "6 months", "1 year", "1+ year"`;
-}
-
-async function chat(messages, sessionData = {}, builderConfig = {}) {
-  if (!process.env.ANTHROPIC_API_KEY ||
-      process.env.ANTHROPIC_API_KEY === 'sk-ant-your-key-here' ||
-      process.env.ANTHROPIC_API_KEY.trim() === '') {
-    throw new Error('ANTHROPIC_API_KEY not configured. Add it to backend/.env');
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+`;
+  } else {
+    prompt += `
+NOTE: No specific property knowledge has been uploaded yet. 
+Answer general real estate questions and encourage the visitor to connect with the sales team for specific details.
+`;
   }
 
-  // Get RAG context if training data exists
-  let ragContext = '';
+  return prompt;
+}
+
+// ─── Main agent function ──────────────────────────────────────────────────────
+
+/**
+ * Send a visitor message to Claude and get a response.
+ * This is the primary function called from chat.js route.
+ *
+ * @param {Object} options
+ * @param {string}   options.userMessage     - Latest message from the visitor
+ * @param {Array}    options.conversationHistory - Previous messages [{role, content}]
+ * @param {string}   options.builderId       - MongoDB _id of the builder
+ * @param {Object}   [options.builderConfig] - Builder settings (brand name, tone, etc.)
+ * @param {boolean}  [options.useRAG=true]   - Whether to retrieve RAG context
+ *
+ * @returns {Promise<Object>} { reply: string, ragContextUsed: boolean, tokensUsed: number }
+ */
+async function chat({
+  userMessage,
+  conversationHistory = [],
+  builderId,
+  builderConfig = {},
+  useRAG = true,
+}) {
   try {
-    if (sessionData.builderId) {
-      const { getRelevantContext } = require('../routes/training');
-      const lastUserMsg = messages.filter(m => m.role === 'user').slice(-1)[0];
-      if (lastUserMsg) {
-        ragContext = getRelevantContext(sessionData.builderId, lastUserMsg.content, 3);
+    // ── Step 1: Retrieve relevant knowledge chunks ─────────────────────────
+    let ragContext = '';
+    let ragContextUsed = false;
+
+    if (useRAG && builderId) {
+      try {
+        ragContext = await ragService.retrieveContext(
+          userMessage,
+          builderId,
+          5 // top 5 most relevant chunks
+        );
+        ragContextUsed = ragContext.length > 0;
+      } catch (ragErr) {
+        // RAG failure is non-fatal — Claude will still respond
+        console.warn('[ClaudeAgent] RAG retrieval failed:', ragErr.message);
       }
     }
-  } catch {}
 
-  const systemPrompt = buildSystemPrompt(builderConfig, ragContext);
+    // ── Step 2: Build system prompt with RAG context ───────────────────────
+    const systemPrompt = buildSystemPrompt(builderConfig, ragContext);
 
-  const response = await client.messages.create({
-    model: 'claude-sonnet-4-20250514',
-    max_tokens: 600,
-    system: systemPrompt,
-    messages: messages.map(m => ({ role: m.role, content: m.content })),
-  });
+    // ── Step 3: Build message array for Claude ─────────────────────────────
+    // Sanitise conversation history to only include valid roles
+    const validHistory = conversationHistory
+      .filter(
+        (m) =>
+          m.role &&
+          ['user', 'assistant'].includes(m.role) &&
+          m.content &&
+          m.content.trim().length > 0
+      )
+      .map((m) => ({ role: m.role, content: m.content }));
 
-  const fullText = response.content[0].text;
+    // Append current visitor message
+    const messages = [
+      ...validHistory,
+      { role: 'user', content: userMessage },
+    ];
 
-  // Extract hidden JSON block
-  const match = fullText.match(/<<<EXTRACTED:(.*?)>>>/s);
-  let extracted = {};
-  if (match) {
-    try { extracted = JSON.parse(match[1]); } catch {}
+    // ── Step 4: Call Claude API ────────────────────────────────────────────
+    const response = await client.messages.create({
+      model: CLAUDE_MODEL,
+      max_tokens: MAX_TOKENS,
+      system: systemPrompt,
+      messages,
+    });
+
+    const reply = response.content[0]?.text || 'Sorry, I could not generate a response.';
+    const tokensUsed = response.usage?.output_tokens || 0;
+
+    return {
+      reply,
+      ragContextUsed,
+      tokensUsed,
+      model: CLAUDE_MODEL,
+    };
+  } catch (err) {
+    console.error('[ClaudeAgent] Error:', err.message);
+    throw new Error(`AI agent error: ${err.message}`);
   }
-
-  const visibleText = fullText.replace(/<<<EXTRACTED:.*?>>>/s, '').trim();
-
-  // Merge extracted with existing session data
-  const mergedData = mergeData(sessionData.extractedData || {}, extracted);
-  const { score, classification, signals } = scoreIntent(mergedData);
-  const tags = generateTags(mergedData, score);
-
-  return {
-    message: visibleText || "I'm here to help you find your perfect home! What kind of property are you looking for?",
-    extractedData: mergedData,
-    intentScore: score,
-    classification,
-    signals,
-    tags,
-    ragUsed: ragContext.length > 0,
-  };
 }
 
-function mergeData(existing, newData) {
-  const merged = { ...existing };
-  Object.entries(newData).forEach(([key, val]) => {
-    if (val === null || val === undefined) return;
-    if (key === 'budget' && typeof val === 'object') {
-      merged.budget = merged.budget || {};
-      if (val.min) merged.budget.min = val.min;
-      if (val.max) merged.budget.max = val.max;
-    } else if (key === 'recommendedProperties' && Array.isArray(val) && val.length > 0) {
-      merged.recommendedProperties = val;
-    } else if (val !== null) {
-      merged[key] = val;
-    }
+// ─── Quick reply for simple greetings ────────────────────────────────────────
+
+/**
+ * Detect if the message is a simple greeting that doesn't need RAG retrieval.
+ * Optimisation to skip embedding + DB lookup for "Hi", "Hello", etc.
+ *
+ * @param {string} message
+ * @returns {boolean}
+ */
+function isSimpleGreeting(message) {
+  const greetings = /^(hi|hello|hey|good\s*(morning|afternoon|evening)|namaste|hii+|yo)\s*[!.]?$/i;
+  return greetings.test(message.trim());
+}
+
+/**
+ * Wrapper used by chat.js — skips RAG for greetings to reduce latency.
+ */
+async function respondToVisitor({
+  userMessage,
+  conversationHistory,
+  builderId,
+  builderConfig,
+}) {
+  const skipRAG = isSimpleGreeting(userMessage);
+
+  return chat({
+    userMessage,
+    conversationHistory,
+    builderId,
+    builderConfig,
+    useRAG: !skipRAG,
   });
-  return merged;
 }
 
-module.exports = { chat };
+module.exports = {
+  respondToVisitor,
+  chat,
+  buildSystemPrompt, // Exported for unit testing
+};
