@@ -8,20 +8,26 @@ const mongoose = require('mongoose');
 const app = express();
 const PORT = process.env.PORT || 3001;
 
-// ── Security Middleware ──────────────────────────────
-app.use(helmet({ crossOriginEmbedderPolicy: false }));
-app.use(cors({ origin: '*', credentials: true }));
-
-// Stripe needs raw body for webhook verification
+// ── Stripe webhook needs raw body BEFORE json parser ──────────
 app.use('/api/payment/stripe/webhook', express.raw({ type: 'application/json' }));
+
+// ── Security ──────────────────────────────────────────────────
+app.use(helmet({ crossOriginEmbedderPolicy: false, contentSecurityPolicy: false }));
+app.use(cors({
+  origin: process.env.CORS_ORIGIN || '*',
+  credentials: true,
+  methods: ['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS'],
+  allowedHeaders: ['Content-Type', 'Authorization', 'X-Api-Key'],
+}));
 app.use(express.json({ limit: '10mb' }));
+app.use(express.urlencoded({ extended: true }));
 
-// ── Rate Limiting ───────────────────────────────────
-app.use('/api/chat',    rateLimit({ windowMs: 60000, max: 60,  message: 'Too many requests' }));
-app.use('/api/auth',   rateLimit({ windowMs: 60000, max: 20,  message: 'Too many auth requests' }));
-app.use('/api/payment',rateLimit({ windowMs: 60000, max: 10,  message: 'Too many payment requests' }));
+// ── Rate limiting ─────────────────────────────────────────────
+app.use('/api/chat',    rateLimit({ windowMs: 60000, max: 60,  message: { error: 'Too many chat requests' } }));
+app.use('/api/auth',   rateLimit({ windowMs: 60000, max: 20,  message: { error: 'Too many auth requests' } }));
+app.use('/api/payment',rateLimit({ windowMs: 60000, max: 10,  message: { error: 'Too many payment requests' } }));
 
-// ── Routes ──────────────────────────────────────────
+// ── Routes ────────────────────────────────────────────────────
 app.use('/api/auth',       require('./routes/auth'));
 app.use('/api/builder',    require('./routes/builder'));
 app.use('/api/payment',    require('./routes/payment'));
@@ -29,55 +35,88 @@ app.use('/api/chat',       require('./routes/chat'));
 app.use('/api/leads',      require('./routes/leads'));
 app.use('/api/properties', require('./routes/properties'));
 app.use('/api/analytics',  require('./routes/analytics'));
+app.use('/api/training',   require('./routes/training'));
 
-// ── Root & Health ────────────────────────────────────
+// ── Root ──────────────────────────────────────────────────────
 app.get('/', (req, res) => {
   res.json({
-    service: 'PropAgent.AI API v2.0',
+    service: 'PropAgent.AI API',
+    version: '2.0.0',
     status: 'running',
+    db: mongoose.connection.readyState === 1 ? 'connected' : 'disconnected',
     endpoints: {
-      auth:      '/api/auth',
-      builder:   '/api/builder',
-      payment:   '/api/payment',
-      chat:      '/api/chat',
-      leads:     '/api/leads',
-      health:    '/api/health'
+      health:    'GET  /api/health',
+      auth:      'POST /api/auth/register | /api/auth/login',
+      chat:      'POST /api/chat/start | /api/chat/message',
+      leads:     'GET  /api/leads | /api/leads/analytics',
+      payment:   'POST /api/payment/razorpay/create-order | /api/payment/razorpay/verify',
+      builder:   'GET  /api/builder/widget-config',
+      training:  'POST /api/training/upload | GET /api/training/docs',
     }
   });
 });
 
 app.get('/api/health', (req, res) => {
+  const keyCheck = (key, fallback) => {
+    const val = process.env[key];
+    return val && val !== fallback && val.trim() !== '';
+  };
   res.json({
     status: 'ok',
-    db: mongoose.connection.readyState === 1 ? 'connected' : 'disconnected',
-    anthropic: !!process.env.ANTHROPIC_API_KEY,
-    razorpay: !!process.env.RAZORPAY_KEY_ID,
-    stripe: !!process.env.STRIPE_SECRET_KEY,
-    timestamp: new Date().toISOString()
+    service: 'PropAgent.AI API',
+    version: '2.0.0',
+    database: mongoose.connection.readyState === 1 ? 'connected' : 'disconnected',
+    keys: {
+      anthropic:  keyCheck('ANTHROPIC_API_KEY', 'sk-ant-your-key-here'),
+      razorpay:   keyCheck('RAZORPAY_KEY_ID', 'rzp_test_your_key_id'),
+      stripe:     keyCheck('STRIPE_SECRET_KEY', 'sk_test_your_stripe_secret_key'),
+      jwt:        keyCheck('JWT_SECRET', 'change-this-in-production'),
+    },
+    timestamp: new Date().toISOString(),
   });
 });
 
-// ── Error Handler ────────────────────────────────────
+// ── 404 ───────────────────────────────────────────────────────
+app.use((req, res) => {
+  res.status(404).json({ error: `Route not found: ${req.method} ${req.path}` });
+});
+
+// ── Error handler ─────────────────────────────────────────────
 app.use((err, req, res, next) => {
-  console.error('❌', err.message);
+  console.error('❌ Unhandled error:', err.message);
   res.status(err.status || 500).json({ error: err.message || 'Internal server error' });
 });
 
-// ── MongoDB + Start ──────────────────────────────────
-mongoose.connect(process.env.MONGODB_URI || 'mongodb://localhost:27017/propagent')
+// ── MongoDB + Start ───────────────────────────────────────────
+const mongoUri = process.env.MONGODB_URI || 'mongodb://localhost:27017/propagent';
+mongoose.connect(mongoUri)
   .then(() => {
-    console.log('✅ MongoDB connected');
-    app.listen(PORT, () => {
-      console.log(`🚀 PropAgent.AI API v2 running on http://localhost:${PORT}`);
-      if (!process.env.ANTHROPIC_API_KEY) console.warn('⚠️  ANTHROPIC_API_KEY missing');
-      if (!process.env.RAZORPAY_KEY_ID)   console.warn('⚠️  RAZORPAY_KEY_ID missing');
-      if (!process.env.STRIPE_SECRET_KEY) console.warn('⚠️  STRIPE_SECRET_KEY missing');
-    });
+    console.log('✅ MongoDB connected:', mongoUri.replace(/\/\/.*@/, '//***@'));
+    startServer();
   })
   .catch(err => {
-    console.error('❌ MongoDB connection failed:', err.message);
-    console.log('ℹ️  Falling back to in-memory mode');
-    app.listen(PORT, () => console.log(`🚀 PropAgent.AI running (no DB) on port ${PORT}`));
+    console.warn('⚠️  MongoDB connection failed:', err.message);
+    console.warn('    Running in in-memory mode (data will not persist)');
+    startServer();
   });
+
+function startServer() {
+  app.listen(PORT, () => {
+    console.log('\n🚀 PropAgent.AI API v2.0 running');
+    console.log(`   http://localhost:${PORT}`);
+    console.log(`   API docs: http://localhost:${PORT}/`);
+    console.log(`   Health:   http://localhost:${PORT}/api/health\n`);
+
+    if (!process.env.ANTHROPIC_API_KEY || process.env.ANTHROPIC_API_KEY === 'sk-ant-your-key-here') {
+      console.warn('⚠️  ANTHROPIC_API_KEY not set — chat will not work');
+    }
+    if (!process.env.RAZORPAY_KEY_ID || process.env.RAZORPAY_KEY_ID === 'rzp_test_your_key_id') {
+      console.warn('⚠️  RAZORPAY_KEY_ID not set — payments in demo mode');
+    }
+    if (!process.env.STRIPE_SECRET_KEY || process.env.STRIPE_SECRET_KEY === 'sk_test_your_stripe_secret_key') {
+      console.warn('⚠️  STRIPE_SECRET_KEY not set — Stripe in demo mode');
+    }
+  });
+}
 
 module.exports = app;
