@@ -5,6 +5,11 @@ const helmet = require('helmet');
 const rateLimit = require('express-rate-limit');
 const mongoose = require('mongoose');
 
+const { Pool }                = require('pg');
+const session                 = require('express-session');
+const { createSessionStore }  = require('./services/redisService');     // NEW
+const { scheduleMonthlyReports } = require('./services/monthlyReportService'); // NEW
+
 const app = express();
 const PORT = process.env.PORT || 3001;
 
@@ -27,8 +32,23 @@ app.use('/api/chat',    rateLimit({ windowMs: 60000, max: 60,  message: { error:
 app.use('/api/auth',   rateLimit({ windowMs: 60000, max: 20,  message: { error: 'Too many auth requests' } }));
 app.use('/api/payment',rateLimit({ windowMs: 60000, max: 10,  message: { error: 'Too many payment requests' } }));
 
+// ── REDIS SESSION (NEW) ─────────────────────────────────
+
+app.use(session({
+  store: createSessionStore(),
+  secret: process.env.JWT_SECRET,
+  resave: false,
+  saveUninitialized: false,
+  cookie: {
+    secure: process.env.NODE_ENV === 'production',
+    httpOnly: true,
+    maxAge: 7 * 24 * 60 * 60 * 1000,  // 7 days
+  },
+}));
+
 // ── Routes ────────────────────────────────────────────────────
 
+// Note: New Routes
 const authRoutes       = require('./routes/auth');
 const builderRoutes    = require('./routes/builder');
 const chatRoutes       = require('./routes/chat');
@@ -38,6 +58,12 @@ const propertiesRoutes = require('./routes/properties');
 const analyticsRoutes  = require('./routes/analytics');
 const notifRoutes      = require('./routes/notifications');
 const trainingRoutes   = require('./routes/training'); 
+const teamRoutes       = require('./routes/team');        // NEW
+const alertRoutes      = require('./routes/alerts');      // NEW
+const adminRoutes      = require('./routes/admin');       // NEW
+const blogRoutes       = require('./routes/blog');        // NEW
+const exportRoutes     = require('./routes/export');      // NEW
+const webhookRoutes    = require('./routes/webhooks');    // NEW
 
 app.use('/api/auth',       require('./routes/auth'));
 app.use('/api/builder',    require('./routes/builder'));
@@ -48,6 +74,15 @@ app.use('/api/properties', require('./routes/properties'));
 app.use('/api/analytics',  require('./routes/analytics'));
 app.use('/api/notifications',require('./routes/notifications'));
 app.use('/api/training',   require('./routes/training'));
+
+// NEW Routes-MOUNTS
+
+app.use('/api/team',       teamRoutes);       // Team member management
+app.use('/api/alerts',     alertRoutes);      // Price alert subscriptions
+app.use('/api/admin',      adminRoutes);      // Super-admin dashboard
+app.use('/api/blog',       blogRoutes);       // SEO blog system
+app.use('/api/export',     exportRoutes);     // CSV / PDF export
+app.use('/api/webhooks',   webhookRoutes);    // HubSpot / Zoho CRM sync
 
 
 
@@ -113,6 +148,15 @@ mongoose.connect(mongoUri)
     console.warn('    Running in in-memory mode (data will not persist)');
     startServer();
   });
+
+  const pgPool = new Pool({ connectionString: process.env.POSTGRES_URI });
+pgPool.connect()
+  .then(() => console.log('[PostgreSQL] Connected'))
+  .catch((err) => console.error('[PostgreSQL] Connection failed:', err.message));
+
+  // Schedule monthly reports (NEW)--- CORN JOBS
+
+  scheduleMonthlyReports();   // Monthly analytics email on 1st of each month
 
 function startServer() {
   app.listen(PORT, () => {

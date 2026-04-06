@@ -22,8 +22,8 @@ const multer = require('multer');
 const path = require('path');
 const fs = require('fs');
 
-const authMiddleware = require('../middleware/auth');
-const planGate = require('../middleware/planGate');
+const { authMiddleware } = require('../middleware/auth');
+const { requirePlan } = require('../middleware/planGate');
 const TrainingDoc = require('../models/TrainingDoc');
 const KnowledgeChunk = require('../models/KnowledgeChunk');
 const ragService = require('../services/ragService');
@@ -83,7 +83,7 @@ router.use(authMiddleware);
  */
 router.post(
   '/upload',
-  planGate('basic'), // Requires at least a basic plan
+  requirePlan('basic'), // Requires at least a basic plan
   upload.single('file'),
   async (req, res) => {
     try {
@@ -139,7 +139,7 @@ router.post(
  *
  * Body: { name: string, content: string }
  */
-router.post('/manual', planGate('basic'), async (req, res) => {
+router.post('/manual', requirePlan('basic'), async (req, res) => {
   try {
     const { name, content } = req.body;
 
