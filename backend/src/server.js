@@ -73,6 +73,7 @@ app.use('/api/leads',      require('./routes/leads'));
 app.use('/api/properties', require('./routes/properties'));
 app.use('/api/analytics',  require('./routes/analytics'));
 app.use('/api/notifications',require('./routes/notifications'));
+app.use('/api/booking', require('./routes/booking'));
 app.use('/api/training',   require('./routes/training'));
 
 // NEW Routes-MOUNTS
