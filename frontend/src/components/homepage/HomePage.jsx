@@ -273,7 +273,7 @@ export default function HomePage({ onTryDemo, onOpenDashboard }) {
           </div>
         </div>
         <div className="footer-bottom">
-          <span>© 2025 PropAgent.AI · All rights reserved</span>
+          <span>© 2026 PropAgent.AI · All rights reserved</span>
           <div style={{ display: 'flex', gap: 20 }}>
             {['Twitter', 'LinkedIn', 'GitHub'].map(s => (
               <span key={s} style={{ color: 'rgba(255,255,255,0.4)', fontSize: 12 }}>{s}</span>
