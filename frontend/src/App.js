@@ -2,11 +2,11 @@ import React, { useState, Suspense } from 'react';
 import { AuthProvider, useAuth } from './context/AuthContext';
 import HomePage from './components/homepage/HomePage';
 
-const ChatWidget      = React.lazy(() => import('./components/chat/ChatWidget'));
-const Dashboard       = React.lazy(() => import('./components/dashboard/Dashboard'));
-const AuthPage        = React.lazy(() => import('./pages/AuthPage'));
-const OnboardingPage  = React.lazy(() => import('./pages/OnboardingPage'));
-const PaymentPage     = React.lazy(() => import('./pages/PaymentPage'));
+const ChatWidget     = React.lazy(() => import('./components/chat/ChatWidget'));
+const Dashboard      = React.lazy(() => import('./components/dashboard/Dashboard'));
+const AuthPage       = React.lazy(() => import('./pages/AuthPage'));
+const OnboardingPage = React.lazy(() => import('./pages/OnboardingPage'));
+const PaymentPage    = React.lazy(() => import('./pages/PaymentPage'));
 
 function Loading() {
   return (
@@ -19,11 +19,10 @@ function Loading() {
 
 function AppRouter() {
   const { isAuthenticated, isOnboarded, hasDashboard, loading, initialized } = useAuth();
-  const [view, setView] = useState('home'); // home | chat | dashboard | auth | onboarding | payment
+  const [view, setView] = useState('home');
 
   if (!initialized || loading) return <Loading />;
 
-  // Routing logic
   function handleGetStarted() {
     if (!isAuthenticated) { setView('auth'); return; }
     if (!isOnboarded)     { setView('onboarding'); return; }
@@ -45,7 +44,7 @@ function AppRouter() {
 
   function handleOnboardingComplete(choosePlan) {
     if (choosePlan) { setView('payment'); return; }
-    setView('chat'); // Starter plan — go to demo
+    setView('chat');
   }
 
   return (
