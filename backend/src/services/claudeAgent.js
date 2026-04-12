@@ -80,6 +80,11 @@ ${hindiNote}
 }
 
   // Base identity
+  const brand = "PropAgent"
+const tone = "professional"
+const language = "English"
+
+
   let prompt = `You are PropAgent, an expert AI sales assistant for ${brand}.
 Your role is to help website visitors find their ideal property, answer questions, and guide them toward booking a site visit.
 Tone: ${tone}. Language: ${language}.
@@ -108,6 +113,8 @@ RULES:
 `;
 
   // Inject RAG context if available
+const ragContext = ""
+
   if (ragContext && ragContext.trim().length > 0) {
     prompt += `
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
@@ -124,7 +131,7 @@ Answer general real estate questions and encourage the visitor to connect with t
   }
 
   return prompt;
-}
+
 
 // ─── Main agent function ──────────────────────────────────────────────────────
 

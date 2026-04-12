@@ -1,332 +1,329 @@
-/**
- * training.js (Routes)
- * ---------------------
- * REST API endpoints for PropAgent.AI's RAG knowledge base management.
- * Builders use these endpoints from the CRM Dashboard to upload training docs.
- *
- * LOCATION: backend/src/routes/training.js
- * STATUS: MODIFIED (full RAG integration added)
- *
- * Endpoints:
- *   POST   /api/training/upload          Upload a PDF/DOCX/TXT file
- *   POST   /api/training/manual          Add plain text manually
- *   GET    /api/training/documents       List all training docs for this builder
- *   GET    /api/training/documents/:id   Get single document details
- *   DELETE /api/training/documents/:id   Delete document + all its chunks
- *   POST   /api/training/reindex/:id     Re-process a failed document
- */
+// backend/src/routes/training.js
+// UPDATED — adds PDF text extraction, chunking, and Pinecone embedding
+// Merges with your existing training.js — ADD the new routes below your existing ones
+//
+// npm install multer pdf-parse uuid  (if not already installed)
 
-const express = require('express');
-const router = express.Router();
-const multer = require('multer');
-const path = require('path');
-const fs = require('fs');
+const express   = require('express')
+const router    = express.Router()
+const multer    = require('multer')
+const pdfParse  = require('pdf-parse')
+const path      = require('path')
+const fs        = require('fs')
+const { v4: uuidv4 } = require('uuid')
+const auth      = require('../middleware/auth')
 
-const { authMiddleware } = require('../middleware/auth');
-const { requirePlan } = require('../middleware/planGate');
-const TrainingDoc = require('../models/TrainingDoc');
-const KnowledgeChunk = require('../models/KnowledgeChunk');
-const ragService = require('../services/ragService');
+// ── Import your existing RAG / Pinecone services ──────────────────────────────
+const ragService     = require('../services/ragService')
+const pineconeService = require('../services/pineconeService')
 
-// ─── Multer configuration ────────────────────────────────────────────────────
-// Files are temporarily saved to /tmp/uploads before processing
-const UPLOAD_DIR = path.join(__dirname, '../../tmp/uploads');
-if (!fs.existsSync(UPLOAD_DIR)) fs.mkdirSync(UPLOAD_DIR, { recursive: true });
-
-const storage = multer.diskStorage({
-  destination: (req, file, cb) => cb(null, UPLOAD_DIR),
-  filename: (req, file, cb) => {
-    const unique = `${Date.now()}-${Math.round(Math.random() * 1e6)}`;
-    cb(null, `${unique}-${file.originalname}`);
-  },
-});
-
-const fileFilter = (req, file, cb) => {
-  const allowed = [
-    'application/pdf',
-    'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
-    'text/plain',
-  ];
-  if (allowed.includes(file.mimetype)) {
-    cb(null, true);
-  } else {
-    cb(new Error('Only PDF, DOCX, and TXT files are allowed.'), false);
-  }
-};
-
+// ── Multer config — stores to tmp/uploads ─────────────────────────────────────
 const upload = multer({
-  storage,
-  fileFilter,
-  limits: { fileSize: 20 * 1024 * 1024 }, // 20 MB max
-});
+  dest: path.join(__dirname, '../../tmp/uploads'),
+  limits: { fileSize: 20 * 1024 * 1024 }, // 20MB max
+  fileFilter: (req, file, cb) => {
+    if (file.mimetype === 'application/pdf') cb(null, true)
+    else cb(new Error('Only PDF files are allowed'), false)
+  },
+})
 
-// ─── Helpers ─────────────────────────────────────────────────────────────────
+// ── Models ────────────────────────────────────────────────────────────────────
+let TrainingDoc, KnowledgeChunk
+try {
+  TrainingDoc    = require('../../models/TrainingDoc')
+  KnowledgeChunk = require('../../models/Knowledgechunk')
+} catch {
+  const mongoose = require('mongoose')
 
-/**
- * Derive doc type string from MIME type.
- */
-function mimeToDocType(mimeType) {
-  if (mimeType === 'application/pdf') return 'pdf';
-  if (mimeType.includes('wordprocessingml')) return 'docx';
-  if (mimeType === 'text/plain') return 'txt';
-  return 'manual';
+  const trainingDocSchema = new mongoose.Schema({
+    botId:      { type: String, required: true, index: true },
+    builderId:  { type: String, required: true },
+    type:       { type: String, enum: ['pdf','url','text'], required: true },
+    name:       { type: String, required: true },
+    sourceUrl:  { type: String, default: '' },
+    status:     { type: String, default: 'processing', enum: ['processing','ready','error'] },
+    chunkCount: { type: Number, default: 0 },
+  }, { timestamps: true })
+  TrainingDoc = mongoose.model('TrainingDoc', trainingDocSchema)
+
+  const chunkSchema = new mongoose.Schema({
+    botId:      { type: String, required: true, index: true },
+    docId:      { type: String, required: true },
+    content:    { type: String, required: true },
+    metadata:   { type: Object, default: {} },
+    pineconeId: { type: String },
+  }, { timestamps: true })
+  KnowledgeChunk = mongoose.model('KnowledgeChunk', chunkSchema)
 }
 
-// ─── All routes require authentication ───────────────────────────────────────
-router.use(authMiddleware);
+// ── Helpers ───────────────────────────────────────────────────────────────────
 
-// ─── POST /api/training/upload ───────────────────────────────────────────────
-/**
- * Upload a PDF / DOCX / TXT document.
- * The file is processed asynchronously — caller gets a trainingDocId immediately
- * and polls GET /documents/:id to check when status === 'indexed'.
- */
-router.post(
-  '/upload',
-  requirePlan('basic'), // Requires at least a basic plan
-  upload.single('file'),
-  async (req, res) => {
+/** Split text into overlapping chunks (~500 tokens each) */
+function chunkText(text, chunkSize = 1800, overlap = 200) {
+  // Clean up whitespace
+  const clean = text.replace(/\n{3,}/g, '\n\n').replace(/ {2,}/g, ' ').trim()
+
+  const paragraphs = clean.split(/\n\n+/)
+  const chunks = []
+  let current = []
+  let currentLen = 0
+
+  for (const para of paragraphs) {
+    if (currentLen + para.length > chunkSize && current.length > 0) {
+      chunks.push(current.join('\n\n'))
+      // Keep overlap: last paragraph(s) as context for next chunk
+      const overlapText = current.slice(-1).join('\n\n')
+      current = overlapText.length < overlap ? [overlapText, para] : [para]
+      currentLen = current.reduce((s, p) => s + p.length, 0)
+    } else {
+      current.push(para)
+      currentLen += para.length
+    }
+  }
+  if (current.length > 0) chunks.push(current.join('\n\n'))
+  return chunks.filter(c => c.trim().length > 50)
+}
+
+/** Embed chunks and upsert to Pinecone */
+async function embedAndStore(botId, docId, chunks, docName) {
+  const pineconeVectors = []
+
+  for (let i = 0; i < chunks.length; i++) {
+    const content = chunks[i]
+
+    // Get embedding — calls your existing pineconeService or OpenAI
+    let embedding
     try {
-      if (!req.file) {
-        return res.status(400).json({ error: 'No file uploaded.' });
-      }
+      // Try your existing service first
+      embedding = await pineconeService.getEmbedding(content)
+    } catch {
+      // Fallback: call OpenAI directly
+      const { OpenAI } = require('openai')
+      const openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY })
+      const res = await openai.embeddings.create({
+        model: 'text-embedding-3-small',
+        input: content.replace(/\n/g, ' '),
+      })
+      embedding = res.data[0].embedding
+    }
 
-      const builderId = req.user._id;
-      const docType = mimeToDocType(req.file.mimetype);
+    const pineconeId = `${botId}-${docId}-${i}`
 
-      // Create the TrainingDoc record immediately (status: pending)
-      const trainingDoc = await TrainingDoc.create({
-        builderId,
-        name: req.body.name || req.file.originalname,
-        type: docType,
-        source: req.file.originalname,
-        fileSize: req.file.size,
-        status: 'pending',
-      });
+    // Save to MongoDB
+    await KnowledgeChunk.create({
+      botId, docId,
+      content,
+      metadata: { docName, chunkIndex: i },
+      pineconeId,
+    })
 
-      // Process asynchronously so the HTTP response is instant
-      setImmediate(async () => {
-        try {
-          await ragService.indexDocument({
-            trainingDocId: trainingDoc._id.toString(),
-            builderId: builderId.toString(),
-            filePath: req.file.path,
-            mimeType: req.file.mimetype,
-            source: req.file.originalname,
-            docType,
-          });
-        } catch (err) {
-          console.error(`[RAG] Indexing failed for ${trainingDoc._id}:`, err.message);
+    pineconeVectors.push({
+      id: pineconeId,
+      values: embedding,
+      metadata: { botId, docId, docName, content: content.slice(0, 500), chunkIndex: i },
+    })
+  }
+
+  // Upsert to Pinecone in batches of 100
+  for (let i = 0; i < pineconeVectors.length; i += 100) {
+    const batch = pineconeVectors.slice(i, i + 100)
+    try {
+      await pineconeService.upsertVectors(batch, botId)
+    } catch {
+      // Fallback: use pinecone client directly
+      const { Pinecone } = require('@pinecone-database/pinecone')
+      const pc = new Pinecone({ apiKey: process.env.PINECONE_API_KEY })
+      const index = pc.index(process.env.PINECONE_INDEX || 'propagent')
+      const ns = index.namespace(botId)
+      await ns.upsert(batch)
+    }
+  }
+
+  return pineconeVectors.length
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// ROUTES
+// ─────────────────────────────────────────────────────────────────────────────
+
+// ── POST /api/training/pdf  — upload and process a PDF ───────────────────────
+router.post('/pdf', auth, upload.single('file'), async (req, res) => {
+  const filePath = req.file?.path
+
+  try {
+    const { botId } = req.body
+    if (!botId)      return res.status(400).json({ error: 'botId is required' })
+    if (!req.file)   return res.status(400).json({ error: 'No PDF file uploaded' })
+
+    const docId  = uuidv4()
+    const docName = req.file.originalname
+
+    // Create DB record immediately (status: processing)
+    await TrainingDoc.create({
+      _id: docId,
+      botId,
+      builderId: req.user.id,
+      type: 'pdf',
+      name: docName,
+      status: 'processing',
+    })
+
+    // Respond immediately — process in background
+    res.status(202).json({
+      docId,
+      status: 'processing',
+      message: 'PDF received. Training will complete in a few minutes.',
+    })
+
+    // Background processing
+    ;(async () => {
+      try {
+        // 1. Extract text
+        const pdfBuffer = fs.readFileSync(filePath)
+        const parsed    = await pdfParse(pdfBuffer)
+        const rawText   = parsed.text
+
+        if (!rawText || rawText.trim().length < 50) {
+          await TrainingDoc.findByIdAndUpdate(docId, { status: 'error' })
+          return
         }
-      });
 
-      return res.status(202).json({
-        message: 'Document received. Indexing in progress.',
-        trainingDocId: trainingDoc._id,
-        status: 'pending',
-      });
-    } catch (err) {
-      console.error('[Training] Upload error:', err);
-      return res.status(500).json({ error: err.message });
-    }
-  }
-);
+        // 2. Chunk
+        const chunks = chunkText(rawText)
 
-// ─── POST /api/training/manual ───────────────────────────────────────────────
-/**
- * Add knowledge manually as plain text (e.g. paste property description).
- * Useful for quick additions without needing a file.
- *
- * Body: { name: string, content: string }
- */
-router.post('/manual', requirePlan('basic'), async (req, res) => {
-  try {
-    const { name, content } = req.body;
+        // 3. Embed + store
+        const count = await embedAndStore(botId, docId, chunks, docName)
 
-    if (!name || !content || content.trim().length < 20) {
-      return res
-        .status(400)
-        .json({ error: 'name and content (min 20 chars) are required.' });
-    }
-
-    const builderId = req.user._id;
-
-    const trainingDoc = await TrainingDoc.create({
-      builderId,
-      name,
-      type: 'manual',
-      source: 'manual-entry',
-      rawText: content,
-      status: 'pending',
-    });
-
-    setImmediate(async () => {
-      try {
-        await ragService.indexDocument({
-          trainingDocId: trainingDoc._id.toString(),
-          builderId: builderId.toString(),
-          rawText: content,
-          source: 'Manual Entry',
-          docType: 'manual',
-        });
-      } catch (err) {
-        console.error(`[RAG] Manual indexing failed for ${trainingDoc._id}:`, err.message);
+        // 4. Mark ready
+        await TrainingDoc.findByIdAndUpdate(docId, { status: 'ready', chunkCount: count })
+      } catch (bgErr) {
+        console.error('[Training PDF] background error:', bgErr.message)
+        await TrainingDoc.findByIdAndUpdate(docId, { status: 'error' }).catch(() => {})
+      } finally {
+        // Clean up temp file
+        fs.unlink(filePath, () => {})
       }
-    });
+    })()
 
-    return res.status(202).json({
-      message: 'Content received. Indexing in progress.',
-      trainingDocId: trainingDoc._id,
-      status: 'pending',
-    });
   } catch (err) {
-    console.error('[Training] Manual add error:', err);
-    return res.status(500).json({ error: err.message });
+    if (filePath) fs.unlink(filePath, () => {})
+    res.status(500).json({ error: err.message })
   }
-});
+})
 
-// ─── GET /api/training/documents ─────────────────────────────────────────────
-/**
- * List all training documents for the authenticated builder.
- * Returns summary info (no rawText or embeddings).
- */
-router.get('/documents', async (req, res) => {
+// ── POST /api/training/url  — crawl a URL ────────────────────────────────────
+router.post('/url', auth, async (req, res) => {
   try {
-    const docs = await TrainingDoc.find(
-      { builderId: req.user._id },
-      { rawText: 0 } // Exclude large field from list view
-    )
+    const { botId, url, name } = req.body
+    if (!botId || !url) return res.status(400).json({ error: 'botId and url are required' })
+
+    const docId   = uuidv4()
+    const docName = name || url
+
+    await TrainingDoc.create({
+      _id: docId, botId,
+      builderId: req.user.id,
+      type: 'url',
+      name: docName,
+      sourceUrl: url,
+      status: 'processing',
+    })
+
+    res.status(202).json({ docId, status: 'processing' })
+
+    // Background crawl
+    ;(async () => {
+      try {
+        const fetch  = (await import('node-fetch')).default
+        const resp   = await fetch(url, { timeout: 15000 })
+        const html   = await resp.text()
+
+        // Strip HTML tags
+        const text = html
+          .replace(/<script[^>]*>[\s\S]*?<\/script>/gi, '')
+          .replace(/<style[^>]*>[\s\S]*?<\/style>/gi, '')
+          .replace(/<[^>]+>/g, ' ')
+          .replace(/\s+/g, ' ')
+          .trim()
+
+        const chunks = chunkText(text)
+        const count  = await embedAndStore(botId, docId, chunks, docName)
+        await TrainingDoc.findByIdAndUpdate(docId, { status: 'ready', chunkCount: count })
+      } catch (e) {
+        console.error('[Training URL] error:', e.message)
+        await TrainingDoc.findByIdAndUpdate(docId, { status: 'error' }).catch(() => {})
+      }
+    })()
+
+  } catch (err) {
+    res.status(500).json({ error: err.message })
+  }
+})
+
+// ── POST /api/training/text  — paste raw text ────────────────────────────────
+router.post('/text', auth, async (req, res) => {
+  try {
+    const { botId, text, name } = req.body
+    if (!botId || !text || !name) return res.status(400).json({ error: 'botId, text, name required' })
+
+    const docId = uuidv4()
+    await TrainingDoc.create({
+      _id: docId, botId,
+      builderId: req.user.id,
+      type: 'text', name, status: 'processing',
+    })
+
+    const chunks = chunkText(text)
+    const count  = await embedAndStore(botId, docId, chunks, name)
+    await TrainingDoc.findByIdAndUpdate(docId, { status: 'ready', chunkCount: count })
+
+    res.json({ docId, status: 'ready', chunkCount: count })
+  } catch (err) {
+    res.status(500).json({ error: err.message })
+  }
+})
+
+// ── GET /api/training/:botId/documents  — list docs ──────────────────────────
+router.get('/:botId/documents', auth, async (req, res) => {
+  try {
+    const docs = await TrainingDoc
+      .find({ botId: req.params.botId, builderId: req.user.id })
       .sort({ createdAt: -1 })
-      .lean();
-
-    return res.json({ documents: docs, total: docs.length });
+    res.json(docs)
   } catch (err) {
-    console.error('[Training] List error:', err);
-    return res.status(500).json({ error: err.message });
+    res.status(500).json({ error: err.message })
   }
-});
+})
 
-// ─── GET /api/training/documents/:id ─────────────────────────────────────────
-/**
- * Get details of a single training document.
- * Includes chunk count and status — used for polling after upload.
- */
-router.get('/documents/:id', async (req, res) => {
+// ── DELETE /api/training/:botId/documents/:docId  ─────────────────────────────
+router.delete('/:botId/documents/:docId', auth, async (req, res) => {
   try {
-    const doc = await TrainingDoc.findOne({
-      _id: req.params.id,
-      builderId: req.user._id,
-    }).lean();
+    const doc = await TrainingDoc.findOneAndDelete({
+      _id: req.params.docId,
+      botId: req.params.botId,
+      builderId: req.user.id,
+    })
+    if (!doc) return res.status(404).json({ error: 'Document not found' })
 
-    if (!doc) {
-      return res.status(404).json({ error: 'Document not found.' });
-    }
+    // Delete chunks from MongoDB
+    await KnowledgeChunk.deleteMany({ docId: req.params.docId })
 
-    return res.json({ document: doc });
+    // Delete from Pinecone namespace (best-effort)
+    try {
+      const { Pinecone } = require('@pinecone-database/pinecone')
+      const pc    = new Pinecone({ apiKey: process.env.PINECONE_API_KEY })
+      const index = pc.index(process.env.PINECONE_INDEX || 'propagent')
+      const ns    = index.namespace(req.params.botId)
+      // Get pinecone IDs for this doc
+      const chunks = await KnowledgeChunk.find({ docId: req.params.docId })
+      const ids    = chunks.map(c => c.pineconeId).filter(Boolean)
+      if (ids.length) await ns.deleteMany(ids)
+    } catch (_) {}
+
+    res.json({ message: 'Document and all its chunks deleted' })
   } catch (err) {
-    console.error('[Training] Get doc error:', err);
-    return res.status(500).json({ error: err.message });
+    res.status(500).json({ error: err.message })
   }
-});
+})
 
-// ─── DELETE /api/training/documents/:id ──────────────────────────────────────
-/**
- * Delete a training document and all its associated knowledge chunks.
- * The AI agent will no longer have access to this knowledge.
- */
-router.delete('/documents/:id', async (req, res) => {
-  try {
-    const builderId = req.user._id.toString();
-    const trainingDocId = req.params.id;
-
-    // Verify ownership before deleting
-    const doc = await TrainingDoc.findOne({
-      _id: trainingDocId,
-      builderId: req.user._id,
-    });
-
-    if (!doc) {
-      return res.status(404).json({ error: 'Document not found.' });
-    }
-
-    await ragService.deleteDocument(trainingDocId, builderId);
-
-    return res.json({ message: 'Document and all associated knowledge deleted.' });
-  } catch (err) {
-    console.error('[Training] Delete error:', err);
-    return res.status(500).json({ error: err.message });
-  }
-});
-
-// ─── POST /api/training/reindex/:id ──────────────────────────────────────────
-/**
- * Re-attempt indexing of a document that previously failed.
- * Uses the rawText already stored in MongoDB (no re-upload needed).
- */
-router.post('/reindex/:id', async (req, res) => {
-  try {
-    const doc = await TrainingDoc.findOne({
-      _id: req.params.id,
-      builderId: req.user._id,
-    });
-
-    if (!doc) {
-      return res.status(404).json({ error: 'Document not found.' });
-    }
-
-    if (!doc.rawText) {
-      return res
-        .status(400)
-        .json({ error: 'No stored text to re-index. Please re-upload the file.' });
-    }
-
-    // Reset to pending before re-indexing
-    await TrainingDoc.findByIdAndUpdate(doc._id, {
-      status: 'pending',
-      errorMessage: null,
-    });
-
-    setImmediate(async () => {
-      try {
-        await ragService.indexDocument({
-          trainingDocId: doc._id.toString(),
-          builderId: req.user._id.toString(),
-          rawText: doc.rawText,
-          source: doc.source,
-          docType: doc.type,
-        });
-      } catch (err) {
-        console.error(`[RAG] Re-index failed for ${doc._id}:`, err.message);
-      }
-    });
-
-    return res.json({ message: 'Re-indexing started.', status: 'pending' });
-  } catch (err) {
-    console.error('[Training] Reindex error:', err);
-    return res.status(500).json({ error: err.message });
-  }
-});
-
-// ─── GET /api/training/stats ──────────────────────────────────────────────────
-/**
- * Get knowledge base stats for the builder's dashboard widget.
- * Returns: total docs, indexed docs, total chunks
- */
-router.get('/stats', async (req, res) => {
-  try {
-    const builderId = req.user._id;
-
-    const [totalDocs, indexedDocs, totalChunks] = await Promise.all([
-      TrainingDoc.countDocuments({ builderId }),
-      TrainingDoc.countDocuments({ builderId, status: 'indexed' }),
-      KnowledgeChunk.countDocuments({ builderId }),
-    ]);
-
-    return res.json({ totalDocs, indexedDocs, totalChunks });
-  } catch (err) {
-    console.error('[Training] Stats error:', err);
-    return res.status(500).json({ error: err.message });
-  }
-});
-
-module.exports = router;
+module.exports = router

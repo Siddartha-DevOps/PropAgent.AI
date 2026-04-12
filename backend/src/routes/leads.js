@@ -1,183 +1,167 @@
-const express = require('express');
-const router = express.Router();
-const { authMiddleware } = require('../middleware/auth');
-const { requirePlan } = require('../middleware/planGate');
-const { v4: uuidv4 } = require('uuid');
+// backend/src/routes/leads.js
+// UPDATED — adds the public POST /capture route used by the chat widget
+// Keep all your existing routes and ADD the new ones marked with "NEW"
 
-// In-memory store — isolated per builder
-const leadsByBuilder = new Map();
+const express = require('express')
+const router  = express.Router()
+const auth    = require('../middleware/auth')
 
-// Seed demo data for demo builder
-function seedDemoLeads(builderId) {
-  if (leadsByBuilder.has(builderId)) return;
-  leadsByBuilder.set(builderId, new Map([
-    ['ld-001', { id:'ld-001', builderId, name:'Priya Sharma', phone:'+91 98765 43210', email:'priya@example.com', intentScore:87, classification:'hot', budget:{min:8000000,max:12000000}, location:'Banjara Hills', propertyType:'3BHK', timeline:'3 months', financing:'home_loan', messageCount:14, tags:['urgent','loan_ready'], conversation:[], properties:['Prestige Skyline 3BHK'], createdAt:new Date(Date.now()-7200000).toISOString() }],
-    ['ld-002', { id:'ld-002', builderId, name:'Rahul Mehta', phone:'+91 87654 32109', email:'rahul@example.com', intentScore:62, classification:'warm', budget:{min:5000000,max:7000000}, location:'Gachibowli', propertyType:'2BHK', timeline:'6 months', financing:'self_funded', messageCount:9, tags:['comparing'], conversation:[], properties:[], createdAt:new Date(Date.now()-18000000).toISOString() }],
-    ['ld-003', { id:'ld-003', builderId, name:'Vikram Nair', phone:'+91 95432 10987', email:'vikram@example.com', intentScore:91, classification:'hot', budget:{min:15000000,max:25000000}, location:'Jubilee Hills', propertyType:'4BHK', timeline:'1 month', financing:'self_funded', messageCount:21, tags:['vip','cash_buyer','urgent'], conversation:[], properties:['Prestige Jubilee Heights'], createdAt:new Date(Date.now()-3600000).toISOString() }],
-    ['ld-004', { id:'ld-004', builderId, name:'Ananya Reddy', phone:null, email:null, intentScore:28, classification:'cold', budget:{min:3000000,max:5000000}, location:'Kompally', propertyType:'2BHK', timeline:'1+ year', financing:'undecided', messageCount:4, tags:[], conversation:[], properties:[], createdAt:new Date(Date.now()-86400000).toISOString() }],
-    ['ld-005', { id:'ld-005', builderId, name:'Deepa Krishnan', phone:'+91 84321 09876', email:'deepa@example.com', intentScore:74, classification:'warm', budget:{min:6000000,max:9000000}, location:'Manikonda', propertyType:'3BHK', timeline:'4 months', financing:'home_loan', messageCount:11, tags:[], conversation:[], properties:['Aparna Kanopy'], createdAt:new Date(Date.now()-28800000).toISOString() }],
-  ]));
+let Lead, Bot
+try { Lead = require('../../models/Lead') } catch { Lead = null }
+try { Bot  = require('../../models/Bot')  } catch { Bot  = null }
+
+// Lazy-load to avoid circular deps
+function getLead() {
+  if (Lead) return Lead
+  const mongoose = require('mongoose')
+  const s = new mongoose.Schema({
+    botId:        { type: String, required: true, index: true },
+    builderId:    { type: String, required: true, index: true },
+    name:         { type: String, required: true },
+    phone:        { type: String, default: '' },
+    email:        { type: String, default: '' },
+    firstMessage: { type: String, default: '' },
+    intentScore:  { type: Number, default: 50 },
+    intentLabel:  { type: String, default: 'warm', enum: ['hot','warm','cold'] },
+    sourcePage:   { type: String, default: '' },
+    sessionId:    { type: String, default: '' },
+    status:       { type: String, default: 'new', enum: ['new','contacted','qualified','converted','lost'] },
+    notes:        { type: String, default: '' },
+  }, { timestamps: true })
+  Lead = mongoose.model('Lead', s)
+  return Lead
 }
 
-function getBuilderLeads(builderId) {
-  if (!leadsByBuilder.has(builderId)) seedDemoLeads(builderId);
-  return leadsByBuilder.get(builderId);
+// ── Intent scorer (reuses your intentScorer service if available) ─────────────
+async function scoreLead(message) {
+  try {
+    const scorer = require('../services/intentScorer')
+    return await scorer.score(message)
+  } catch {
+    // Simple fallback scoring
+    const msg   = (message || '').toLowerCase()
+    const hot   = ['price','cost','book','buy','visit','purchase','ready to move']
+    const warm  = ['bhk','floor','amenities','location','loan','emi','available']
+    const hotHit  = hot.filter(k => msg.includes(k)).length
+    const warmHit = warm.filter(k => msg.includes(k)).length
+    if (hotHit >= 2) return { score: 85, label: 'hot' }
+    if (hotHit === 1) return { score: 72, label: 'hot' }
+    if (warmHit >= 1) return { score: 55, label: 'warm' }
+    return { score: 30, label: 'cold' }
+  }
 }
 
-// ─────────────────────────────────────────────────
-// GET /api/leads — List leads for authenticated builder
-// ─────────────────────────────────────────────────
-router.get('/', authMiddleware, requirePlan('growth'), async (req, res) => {
+// ─────────────────────────────────────────────────────────────────────────────
+// NEW — POST /api/leads/capture
+// Public route — NO auth — called by the embeddable chat widget
+// ─────────────────────────────────────────────────────────────────────────────
+router.post('/capture', async (req, res) => {
   try {
-    const mongoose = require('mongoose');
-    if (mongoose.connection.readyState === 1) {
-      const Lead = require('../models/Lead');
-      let query = { builderId: req.userId };
-      if (req.query.classification) query.classification = req.query.classification;
-      const leads = await Lead.find(query).sort({ createdAt: -1 }).lean();
-      return res.json(leads);
+    const { botId, name, phone, email, firstMessage, sourcePage, sessionId } = req.body
+
+    if (!botId) return res.status(400).json({ error: 'botId is required' })
+    if (!name)  return res.status(400).json({ error: 'name is required' })
+
+    // Get builderId from bot
+    let builderId = req.body.builderId
+    if (!builderId && Bot) {
+      const bot = await Bot.findById(botId).select('builderId')
+      builderId  = bot?.builderId
     }
-  } catch {}
+    if (!builderId) return res.status(404).json({ error: 'Bot not found' })
 
-  // In-memory
-  let leads = Array.from(getBuilderLeads(req.userId).values());
-  if (req.query.classification) leads = leads.filter(l => l.classification === req.query.classification);
-  res.json(leads.sort((a,b) => new Date(b.createdAt) - new Date(a.createdAt)));
-});
+    const { score, label } = await scoreLead(firstMessage)
 
-// ─────────────────────────────────────────────────
-// GET /api/leads/analytics — Analytics for this builder
-// ─────────────────────────────────────────────────
-router.get('/analytics', authMiddleware, requirePlan('growth'), async (req, res) => {
-  let all;
+    const LeadModel = getLead()
+    const lead = await LeadModel.create({
+      botId, builderId,
+      name, phone: phone || '', email: email || '',
+      firstMessage: firstMessage || '',
+      intentScore: score, intentLabel: label,
+      sourcePage: sourcePage || '', sessionId: sessionId || '',
+    })
+
+    // Increment lead count on bot
+    if (Bot) {
+      await Bot.findByIdAndUpdate(botId, { $inc: { totalLeads: 1 } }).catch(() => {})
+    }
+
+    res.status(201).json({ leadId: lead._id, message: 'Lead captured' })
+  } catch (err) {
+    console.error('[Lead capture]', err.message)
+    res.status(500).json({ error: err.message })
+  }
+})
+
+// ─────────────────────────────────────────────────────────────────────────────
+// EXISTING routes (keep these — just shown here for completeness)
+// GET /api/leads  — all leads for builder
+// ─────────────────────────────────────────────────────────────────────────────
+router.get('/', auth, async (req, res) => {
   try {
-    const mongoose = require('mongoose');
-    if (mongoose.connection.readyState === 1) {
-      const Lead = require('../models/Lead');
-      all = await Lead.find({ builderId: req.userId }).lean();
-    }
-  } catch {}
+    const { botId, intent, status, page = 1, limit = 50 } = req.query
+    const filter = { builderId: req.user.id }
+    if (botId)  filter.botId        = botId
+    if (intent) filter.intentLabel  = intent
+    if (status) filter.status       = status
 
-  if (!all) all = Array.from(getBuilderLeads(req.userId).values());
+    const LeadModel = getLead()
+    const [leads, total] = await Promise.all([
+      LeadModel.find(filter).sort({ createdAt: -1 }).skip((page-1)*limit).limit(+limit),
+      LeadModel.countDocuments(filter),
+    ])
+    res.json({ leads, total, page: +page, pages: Math.ceil(total/limit) })
+  } catch (err) {
+    res.status(500).json({ error: err.message })
+  }
+})
 
-  const total = all.length;
-  const hot   = all.filter(l => l.classification==='hot').length;
-  const warm  = all.filter(l => l.classification==='warm').length;
-  const cold  = all.filter(l => l.classification==='cold').length;
-  const avgScore = total ? Math.round(all.reduce((s,l) => s+l.intentScore, 0)/total) : 0;
-
-  const locationMap={}, propMap={};
-  const budgetBuckets = {'Under 50L':0,'50L-1Cr':0,'1Cr-2Cr':0,'Above 2Cr':0};
-
-  all.forEach(l => {
-    if (l.location) locationMap[l.location] = (locationMap[l.location]||0)+1;
-    if (l.propertyType) propMap[l.propertyType] = (propMap[l.propertyType]||0)+1;
-    if (l.budget?.max) {
-      if (l.budget.max < 5000000)        budgetBuckets['Under 50L']++;
-      else if (l.budget.max < 10000000)  budgetBuckets['50L-1Cr']++;
-      else if (l.budget.max < 20000000)  budgetBuckets['1Cr-2Cr']++;
-      else                               budgetBuckets['Above 2Cr']++;
-    }
-  });
-
-  const trend = Array.from({length:7},(_,i) => {
-    const d = new Date(); d.setDate(d.getDate()-(6-i));
-    const day = all.filter(l => new Date(l.createdAt).toDateString()===d.toDateString());
-    return { date: d.toLocaleDateString('en-IN',{weekday:'short',day:'numeric',month:'short'}), total:day.length, hot:day.filter(l=>l.classification==='hot').length, warm:day.filter(l=>l.classification==='warm').length, cold:day.filter(l=>l.classification==='cold').length, avgScore: day.length ? Math.round(day.reduce((s,l)=>s+l.intentScore,0)/day.length):0 };
-  });
-
-  res.json({
-    summary: { total, hot, warm, cold, avgScore, conversionRate: total?Math.round((hot/total)*100):0 },
-    locations: Object.entries(locationMap).map(([name,count])=>({name,count})).sort((a,b)=>b.count-a.count),
-    budgetBuckets: Object.entries(budgetBuckets).map(([range,count])=>({range,count})),
-    propertyTypes: Object.entries(propMap).map(([type,count])=>({type,count})),
-    trend
-  });
-});
-
-// ─────────────────────────────────────────────────
-// GET /api/leads/:id
-// ─────────────────────────────────────────────────
-router.get('/:id', authMiddleware, async (req, res) => {
+// PATCH /api/leads/:leadId/status
+router.patch('/:leadId/status', auth, async (req, res) => {
   try {
-    const mongoose = require('mongoose');
-    if (mongoose.connection.readyState === 1) {
-      const Lead = require('../models/Lead');
-      const lead = await Lead.findOne({ _id: req.params.id, builderId: req.userId });
-      if (!lead) return res.status(404).json({ error: 'Lead not found' });
-      return res.json(lead);
-    }
-  } catch {}
+    const { status, notes } = req.body
+    const valid = ['new','contacted','qualified','converted','lost']
+    if (!valid.includes(status)) return res.status(400).json({ error: 'Invalid status' })
 
-  const lead = getBuilderLeads(req.userId).get(req.params.id);
-  if (!lead) return res.status(404).json({ error: 'Lead not found' });
-  res.json(lead);
-});
+    const LeadModel = getLead()
+    const lead = await LeadModel.findOneAndUpdate(
+      { _id: req.params.leadId, builderId: req.user.id },
+      { status, ...(notes !== undefined && { notes }) },
+      { new: true }
+    )
+    if (!lead) return res.status(404).json({ error: 'Lead not found' })
+    res.json(lead)
+  } catch (err) {
+    res.status(500).json({ error: err.message })
+  }
+})
 
-// ─────────────────────────────────────────────────
-// PATCH /api/leads/:id — Update lead status
-// ─────────────────────────────────────────────────
-router.patch('/:id', authMiddleware, async (req, res) => {
+// GET /api/leads/export  — CSV export
+router.get('/export', auth, async (req, res) => {
   try {
-    const mongoose = require('mongoose');
-    if (mongoose.connection.readyState === 1) {
-      const Lead = require('../models/Lead');
-      const lead = await Lead.findOneAndUpdate(
-        { _id: req.params.id, builderId: req.userId },
-        req.body,
-        { new: true }
-      );
-      if (!lead) return res.status(404).json({ error: 'Not found' });
-      return res.json(lead);
-    }
-  } catch {}
+    const { botId } = req.query
+    const filter = { builderId: req.user.id }
+    if (botId) filter.botId = botId
 
-  const leads = getBuilderLeads(req.userId);
-  const lead = leads.get(req.params.id);
-  if (!lead) return res.status(404).json({ error: 'Not found' });
-  const updated = { ...lead, ...req.body, updatedAt: new Date().toISOString() };
-  leads.set(req.params.id, updated);
-  res.json(updated);
-});
+    const LeadModel = getLead()
+    const leads = await LeadModel.find(filter).sort({ createdAt: -1 })
 
-// ─────────────────────────────────────────────────
-// Internal helper — create lead from chat session
-// ─────────────────────────────────────────────────
-async function createLeadFromSession(builderId, sessionData, extracted) {
-  const id = 'ld-' + uuidv4().split('-')[0];
-  const lead = {
-    id, builderId,
-    name: extracted.name || null,
-    phone: extracted.phone || null,
-    email: extracted.email || null,
-    budget: extracted.budget || null,
-    location: extracted.location || null,
-    propertyType: extracted.propertyType || null,
-    timeline: extracted.timeline || null,
-    financing: extracted.financing || null,
-    intentScore: sessionData.intentScore || 0,
-    classification: sessionData.classification || 'cold',
-    tags: sessionData.tags || [],
-    properties: extracted.recommendedProperties || [],
-    conversation: sessionData.messages || [],
-    messageCount: (sessionData.messages || []).length,
-    createdAt: new Date().toISOString()
-  };
+    const rows = [
+      ['Name','Phone','Email','First Message','Intent','Status','Source Page','Date'],
+      ...leads.map(l => [
+        l.name, l.phone, l.email,
+        `"${(l.firstMessage||'').replace(/"/g,'""')}"`,
+        l.intentLabel, l.status, l.sourcePage,
+        new Date(l.createdAt).toLocaleDateString('en-IN'),
+      ])
+    ]
 
-  try {
-    const mongoose = require('mongoose');
-    if (mongoose.connection.readyState === 1) {
-      const Lead = require('../models/Lead');
-      const dbLead = await Lead.create({ ...lead, builderId });
-      return dbLead._id.toString();
-    }
-  } catch {}
+    res.setHeader('Content-Type', 'text/csv')
+    res.setHeader('Content-Disposition', 'attachment; filename=propagent-leads.csv')
+    res.send(rows.map(r => r.join(',')).join('\n'))
+  } catch (err) {
+    res.status(500).json({ error: err.message })
+  }
+})
 
-  // In-memory fallback
-  const leads = getBuilderLeads(builderId);
-  leads.set(id, lead);
-  return id;
-}
-
-module.exports = router;
-module.exports.createLeadFromSession = createLeadFromSession;
+module.exports = router

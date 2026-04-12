@@ -65,16 +65,17 @@ const blogRoutes       = require('./routes/blog');        // NEW
 const exportRoutes     = require('./routes/export');      // NEW
 const webhookRoutes    = require('./routes/webhooks');    // NEW
 
-app.use('/api/auth',       require('./routes/auth'));
-app.use('/api/builder',    require('./routes/builder'));
-app.use('/api/payment',    require('./routes/payment'));
-app.use('/api/chat',       require('./routes/chat'));
-app.use('/api/leads',      require('./routes/leads'));
-app.use('/api/properties', require('./routes/properties'));
-app.use('/api/analytics',  require('./routes/analytics'));
-app.use('/api/notifications',require('./routes/notifications'));
-app.use('/api/booking', require('./routes/booking'));
-app.use('/api/training',   require('./routes/training'));
+app.use('/api/auth',           require('./routes/auth'));
+app.use('/api/builder',        require('./routes/builder'));
+app.use('/api/payment',        require('./routes/payment'));
+app.use('/api/chat',           require('./routes/chat'));
+app.use('/api/leads',          require('./routes/leads'));
+app.use('/api/properties',     require('./routes/properties'));
+app.use('/api/analytics',      require('./routes/analytics'));
+app.use('/api/notifications',  require('./routes/notifications'));
+app.use('/api/booking',        require('./routes/booking'));
+app.use('/api/training',       require('./routes/training'));
+app.use('/api/bots',           require('./routes/bots'));
 
 // NEW Routes-MOUNTS
 
@@ -158,6 +159,34 @@ pgPool.connect()
   // Schedule monthly reports (NEW)--- CORN JOBS
 
   scheduleMonthlyReports();   // Monthly analytics email on 1st of each month
+
+const path = require('path')
+const fs   = require('fs')
+ 
+app.get('/api/widget/:botId.js', async (req, res) => {
+  try {
+    const { botId } = req.params
+    if (!/^[a-f0-9]{24}$/.test(botId)) {            // basic MongoDB ObjectId validation
+      return res.status(400).send('// Invalid bot ID')
+    }
+ 
+    const widgetPath = path.join(__dirname, '../../public/widget.js')
+    let js = fs.readFileSync(widgetPath, 'utf8')
+ 
+    // Inject bot ID and API base URL into the widget script
+    const apiBase = process.env.API_PUBLIC_URL || `http://localhost:${process.env.PORT || 5000}`
+    js = js.replace("'__API_BASE__'", `'${apiBase}'`)
+    js = js.replace("'__BOT_ID__'",  `'${botId}'`)
+ 
+    res.setHeader('Content-Type', 'application/javascript')
+    res.setHeader('Cache-Control', 'public, max-age=60')
+    res.setHeader('Access-Control-Allow-Origin', '*')
+    res.send(js)
+  } catch (err) {
+    console.error('[Widget serve]', err.message)
+    res.status(500).send('// Widget unavailable')
+  }
+})
 
 function startServer() {
   app.listen(PORT, () => {
