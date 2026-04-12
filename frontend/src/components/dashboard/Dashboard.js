@@ -8,6 +8,7 @@ import EmbedPage     from './EmbedPage'
 import AnalyticsPage from './AnalyticsPage'
 import BotCustomizePage      from './BotCustomizePage'
 import ConversationHistoryPage from './ConversationHistoryPage'
+import PropAgentLogo from '../components/PropAgentLogo';
 
 const API = process.env.REACT_APP_API_URL || 'http://localhost:5000'
 
@@ -42,6 +43,7 @@ export default function Dashboard() {
   return (
     <div style={S.shell}>
       <aside style={S.sidebar}>
+        <PropAgentLogo size="md" />
         <div style={S.logo}>
           <span style={{ fontSize:22 }}>🏢</span>
           <span style={S.logoTxt}>PropAgent.AI</span>

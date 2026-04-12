@@ -1,5 +1,6 @@
 import React, { useState, useEffect } from 'react';
 import './HomePage.css';
+import PropAgentLogo from '../components/PropAgentLogo';
 
 export default function HomePage({ onTryDemo, onOpenDashboard }) {
   const [score, setScore] = useState(0);
@@ -21,6 +22,7 @@ export default function HomePage({ onTryDemo, onOpenDashboard }) {
       {/* NAV */}
       <nav className="nav">
         <a href="/" className="nav-logo">
+        <PropAgentLogo size="xl" />
           <div className="nav-logo-icon">P</div>
           <span className="nav-logo-text">PropAgent<span>.AI</span></span>
         </a>

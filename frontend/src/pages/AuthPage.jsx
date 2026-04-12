@@ -1,5 +1,6 @@
 import React, { useState } from 'react';
 import { useAuth } from '../context/AuthContext';
+import PropAgentLogo from '../components/PropAgentLogo';
 
 export default function AuthPage({ onSuccess, onBack }) {
   const { login, register } = useAuth();
@@ -59,7 +60,9 @@ export default function AuthPage({ onSuccess, onBack }) {
           <div style={S.logoIco}>P</div>
           <span style={{ fontSize:17, fontWeight:700 }}>PropAgent<span style={{ color:'#B8952A' }}>.AI</span></span>
         </div>
-
+<div style={{ display: 'flex', justifyContent: 'center', marginBottom: '2rem' }}>
+  <PropAgentLogo size="lg" />
+</div>
         <div style={S.title}>{mode === 'login' ? 'Welcome back' : 'Create your account'}</div>
         <div style={S.sub}>{mode === 'login' ? 'Sign in to your PropAgent.AI dashboard.' : 'Start your free trial — no credit card required.'}</div>
 
