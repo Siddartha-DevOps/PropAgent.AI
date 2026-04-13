@@ -26,7 +26,7 @@ const mammoth = require('mammoth');
 
 const TrainingDoc = require('../models/TrainingDoc');
 const KnowledgeChunk = require('../models/KnowledgeChunk');
-
+const pinecone = require('./pineconeService');
 // ─── OpenAI client (used only for embeddings) ───────────────────────────────
 const openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
 
@@ -167,15 +167,17 @@ async function embedBatch(texts) {
  * @param {string} [options.source]      - Label: filename or URL
  * @param {string} [options.docType]     - 'pdf' | 'txt' | 'docx' | 'url' | 'manual'
  */
-async function indexDocument({
-  trainingDocId,
-  builderId,
-  filePath,
-  mimeType,
-  rawText,
-  source,
-  docType,
-}) {
+async function indexDocument(trainingDocId, builderId, chunks, embeddings, source, docType) {
+  await pinecone.upsertChunks({
+    builderId,
+    trainingDocId,
+    chunks,
+    embeddings,
+    source,
+    docType,
+  });
+}
+ {
   // Mark document as processing
   await TrainingDoc.findByIdAndUpdate(trainingDocId, { status: 'processing' });
 
@@ -280,7 +282,9 @@ function cosineSimilarity(a, b) {
  * @param {number} [topK=5]    - Number of chunks to return
  * @returns {Promise<string>}  - Formatted context string for Claude's prompt
  */
-async function retrieveContext(query, builderId, topK = 5) {
+async function getRelevantContext(queryEmbedding, builderId, topK = 5) {
+  return await pinecone.queryChunks(queryEmbedding, builderId, topK);
+}
   // Step 1: Embed the query
   const queryEmbedding = await embedText(query);
 

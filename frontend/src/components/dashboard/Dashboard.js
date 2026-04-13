@@ -1,14 +1,14 @@
 import React, { useEffect, useState } from 'react'
-import { Routes, Route, NavLink, useNavigate, useParams } from 'react-router-dom'
-import BotsPage      from './BotsPage'
-import NewBotPage    from './NewBotPage'
-import TrainPage     from './TrainPage'
-import LeadsPage     from './LeadsPage'
-import EmbedPage     from './EmbedPage'
-import AnalyticsPage from './AnalyticsPage'
-import BotCustomizePage      from './BotCustomizePage'
-import ConversationHistoryPage from './ConversationHistoryPage'
-import PropAgentLogo from '../components/PropAgentLogo';
+import { Routes, Route, NavLink, useNavigate } from 'react-router-dom'
+import BotsPage                   from './BotsPage'
+import NewBotPage                 from './NewBotPage'
+import TrainPage                  from './TrainPage'
+import LeadsPage                  from './LeadsPage'
+import EmbedPage                  from './EmbedPage'
+import AnalyticsPage              from './AnalyticsPage'
+import BotCustomizePage           from './BotCustomizePage'
+import ConversationHistoryPage    from './ConversationHistoryPage'
+import PropAgentLogo              from '../PropAgentLogo'
 
 const API = process.env.REACT_APP_API_URL || 'http://localhost:5000'
 
@@ -19,12 +19,12 @@ const NAV = [
   { to:'/dashboard/analytics', label:'📊 Analytics'         },
 ]
 
-// Add state for selected bot and active page:
 export default function Dashboard() {
   const navigate = useNavigate()
   const [user, setUser] = useState(null)
-  const [activePage, setActivePage]   = useState('bots');   // already exists, adjust
+  const [activePage, setActivePage]       = useState('bots');
   const [selectedBotId, setSelectedBotId] = useState(null);
+  const token = localStorage.getItem('token')
 
   useEffect(() => {
     try { setUser(JSON.parse(localStorage.getItem('user') || '{}')) } catch {}
@@ -43,10 +43,8 @@ export default function Dashboard() {
   return (
     <div style={S.shell}>
       <aside style={S.sidebar}>
-        <PropAgentLogo size="md" />
         <div style={S.logo}>
-          <span style={{ fontSize:22 }}>🏢</span>
-          <span style={S.logoTxt}>PropAgent.AI</span>
+          <PropAgentLogo size="md" />
         </div>
         <nav style={S.nav}>
           {NAV.map(({ to, label, end }) => (
@@ -74,38 +72,39 @@ export default function Dashboard() {
       </aside>
 
       <main style={S.main}>
-        <Routes>
-          <Route path="/"               element={<OverviewPage user={user} />} />
-          <Route path="/bots"           element={<BotsPage />} />
-          <Route path="/bots/new"       element={<NewBotPage />} />
-          <Route path="/bots/:botId/train" element={<TrainPage />} />
-          <Route path="/bots/:botId/embed" element={<EmbedPage />} />
-          <Route path="/leads"          element={<LeadsPage />} />
-          <Route path="/analytics"      element={<AnalyticsPage />} />
-        </Routes>
+        {activePage === 'customize' && (
+          <BotCustomizePage
+            botId={selectedBotId}
+            token={token}
+            onBack={() => setActivePage('bots')}
+          />
+        )}
+        {activePage === 'history' && (
+          <ConversationHistoryPage
+            botId={selectedBotId}
+            token={token}
+            onBack={() => setActivePage('bots')}
+          />
+        )}
+        {activePage !== 'customize' && activePage !== 'history' && (
+          <Routes>
+            <Route path="/"                  element={<OverviewPage user={user} />} />
+            <Route path="/bots"              element={<BotsPage />} />
+            <Route path="/bots/new"          element={<NewBotPage />} />
+            <Route path="/bots/:botId/train" element={<TrainPage />} />
+            <Route path="/bots/:botId/embed" element={<EmbedPage />} />
+            <Route path="/leads"             element={<LeadsPage />} />
+            <Route path="/analytics"         element={<AnalyticsPage />} />
+          </Routes>
+        )}
       </main>
     </div>
   )
 }
 
-{activePage === 'customize' && (
-  <BotCustomizePage
-    botId={selectedBotId}
-    token={token}
-    onBack={() => setActivePage('bots')}
-  />
-)}
-{activePage === 'history' && (
-  <ConversationHistoryPage
-    botId={selectedBotId}
-    token={token}
-    onBack={() => setActivePage('bots')}
-  />
-)}
-
 function OverviewPage({ user }) {
   const navigate = useNavigate()
-  const [stats, setStats]       = useState({ bots:0, leads:0, messages:0, hot:0 })
+  const [stats, setStats]        = useState({ bots:0, leads:0, messages:0, hot:0 })
   const [recentLeads, setRecent] = useState([])
 
   useEffect(() => {
@@ -183,14 +182,13 @@ function OverviewPage({ user }) {
 }
 
 const S = {
-  shell:   { display:'flex', height:'100vh', overflow:'hidden', background:'#f8fafc' },
-  sidebar: { width:220, background:'#fff', borderRight:'1px solid #e2e8f0', display:'flex', flexDirection:'column', flexShrink:0 },
-  logo:    { display:'flex', alignItems:'center', gap:10, padding:'20px 18px', borderBottom:'1px solid #f1f5f9' },
-  logoTxt: { fontSize:15, fontWeight:800, color:'#0f172a' },
-  nav:     { flex:1, padding:'12px 10px', display:'flex', flexDirection:'column', gap:2 },
-  link:    { display:'block', padding:'9px 12px', borderRadius:10, fontSize:13.5, fontWeight:500, color:'#64748b', textDecoration:'none' },
+  shell:      { display:'flex', height:'100vh', overflow:'hidden', background:'#f8fafc' },
+  sidebar:    { width:220, background:'#fff', borderRight:'1px solid #e2e8f0', display:'flex', flexDirection:'column', flexShrink:0 },
+  logo:       { display:'flex', alignItems:'center', padding:'16px 18px', borderBottom:'1px solid #f1f5f9' },
+  nav:        { flex:1, padding:'12px 10px', display:'flex', flexDirection:'column', gap:2 },
+  link:       { display:'block', padding:'9px 12px', borderRadius:10, fontSize:13.5, fontWeight:500, color:'#64748b', textDecoration:'none' },
   linkActive: { background:'#eff6ff', color:'#1a56db', fontWeight:700 },
-  userArea:{ padding:'12px 14px', borderTop:'1px solid #f1f5f9', display:'flex', alignItems:'center', gap:10 },
-  avatar:  { width:32, height:32, borderRadius:'50%', background:'linear-gradient(135deg,#1a56db,#3b82f6)', color:'#fff', display:'flex', alignItems:'center', justifyContent:'center', fontSize:12, fontWeight:700, flexShrink:0 },
-  main:    { flex:1, overflowY:'auto' },
+  userArea:   { padding:'12px 14px', borderTop:'1px solid #f1f5f9', display:'flex', alignItems:'center', gap:10 },
+  avatar:     { width:32, height:32, borderRadius:'50%', background:'linear-gradient(135deg,#1a56db,#3b82f6)', color:'#fff', display:'flex', alignItems:'center', justifyContent:'center', fontSize:12, fontWeight:700, flexShrink:0 },
+  main:       { flex:1, overflowY:'auto' },
 }

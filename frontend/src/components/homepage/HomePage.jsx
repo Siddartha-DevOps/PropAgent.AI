@@ -1,6 +1,6 @@
 import React, { useState, useEffect } from 'react';
 import './HomePage.css';
-import PropAgentLogo from '../components/PropAgentLogo';
+import PropAgentLogo from '../PropAgentLogo';
 
 export default function HomePage({ onTryDemo, onOpenDashboard }) {
   const [score, setScore] = useState(0);
@@ -22,9 +22,7 @@ export default function HomePage({ onTryDemo, onOpenDashboard }) {
       {/* NAV */}
       <nav className="nav">
         <a href="/" className="nav-logo">
-        <PropAgentLogo size="xl" />
-          <div className="nav-logo-icon">P</div>
-          <span className="nav-logo-text">PropAgent<span>.AI</span></span>
+          <PropAgentLogo size="md" />
         </a>
         <div className="nav-links">
           {/* FIX: All nav links use scrollTo, not href="#" */}
@@ -243,8 +241,7 @@ export default function HomePage({ onTryDemo, onOpenDashboard }) {
         <div className="footer-top">
           <div>
             <a href="/" className="nav-logo" style={{ display: 'inline-flex', textDecoration: 'none' }}>
-              <div className="nav-logo-icon">P</div>
-              <span className="nav-logo-text" style={{ color: '#fff' }}>PropAgent<span>.AI</span></span>
+              <PropAgentLogo size="sm" />
             </a>
             <p className="footer-desc">AI sales agent for real estate websites. Qualifies buyers 24/7, scores intent, and feeds your CRM with hot leads automatically.</p>
           </div>
