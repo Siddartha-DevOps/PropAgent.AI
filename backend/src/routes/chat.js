@@ -1,117 +1,113 @@
-const express = require('express');
+// backend/routes/chat.js
+const express = require("express");
 const router = express.Router();
-const { v4: uuidv4 } = require('uuid');
-const { chat } = require('../services/claudeAgent');
+const { v4: uuidv4 } = require("uuid");
+const Session = require("../models/Session");
 
-const sessions = new Map();
+// ─── REMOVED: const sessions = new Map(); ───
+// Sessions now live in MongoDB via the Session model.
 
-// FIX: Check API key early and return clear error
-function checkApiKey(res) {
-  const key = process.env.ANTHROPIC_API_KEY;
-  if (!key || key === 'your_anthropic_api_key_here' || key.trim() === '') {
-    res.status(503).json({
-      error: 'ANTHROPIC_API_KEY not configured',
-      message: "I'm not connected to AI yet. Please add your ANTHROPIC_API_KEY to backend/.env and restart the server.",
-      fix: 'Open backend/.env → set ANTHROPIC_API_KEY=sk-ant-...'
-    });
-    return false;
-  }
-  return true;
-}
-
-// Start a new chat session
-router.post('/start', (req, res) => {
-  const sessionId = uuidv4();
-  sessions.set(sessionId, {
-    sessionId,
-    messages: [],
-    extractedData: {},
-    intentScore: 0,
-    classification: 'cold',
-    startTime: new Date()
-  });
-  res.json({ sessionId });
-});
-
-// Send a message and get AI response
-router.post('/message', async (req, res) => {
-  if (!checkApiKey(res)) return;
-
-  const { sessionId, message, builderConfig } = req.body;
-
-  if (!sessionId || !message) {
-    return res.status(400).json({ error: 'sessionId and message are required' });
-  }
-
-  // Get or create session
-  let session = sessions.get(sessionId);
-  if (!session) {
-    session = {
-      sessionId,
-      messages: [],
-      extractedData: {},
-      intentScore: 0,
-      classification: 'cold',
-      startTime: new Date()
-    };
-    sessions.set(sessionId, session);
-  }
-
-  const userMsg = { role: 'user', content: message, timestamp: new Date() };
-  const messages = [...(session.messages || []), userMsg];
-
+/**
+ * POST /api/chat
+ * Body: { sessionId?, message, userId? }
+ */
+router.post("/", async (req, res) => {
   try {
-    const result = await chat(messages, session, builderConfig || {});
+    const { message, userId } = req.body;
+    let { sessionId } = req.body;
 
-    // FIX: Always ensure message is a string
-    const responseMessage = (result.message && typeof result.message === 'string' && result.message.trim())
-      ? result.message.trim()
-      : "I'm here to help you find your perfect home! Could you tell me what type of property you're looking for?";
-
-    const assistantMsg = { role: 'assistant', content: responseMessage, timestamp: new Date() };
-    const updatedMessages = [...messages, assistantMsg];
-
-    sessions.set(sessionId, {
-      ...session,
-      messages: updatedMessages,
-      extractedData: result.extractedData || {},
-      intentScore: result.intentScore || 0,
-      classification: result.classification || 'cold'
-    });
-
-    res.json({
-      message: responseMessage,
-      intentScore: result.intentScore || 0,
-      classification: result.classification || 'cold',
-      signals: result.signals || [],
-      tags: result.tags || []
-    });
-
-  } catch (err) {
-    console.error('Chat error:', err.message);
-
-    // FIX: Always return a usable message, never let frontend get undefined
-    let userFriendlyMessage = "I'm experiencing a connection issue. Please try again in a moment.";
-
-    if (err.message?.includes('401') || err.message?.includes('authentication')) {
-      userFriendlyMessage = "AI authentication failed. Please check your ANTHROPIC_API_KEY in backend/.env";
-    } else if (err.message?.includes('rate') || err.message?.includes('429')) {
-      userFriendlyMessage = "I'm getting too many requests right now. Please wait a moment and try again.";
+    // 1. Resolve or create session
+    let session;
+    if (sessionId) {
+      session = await Session.findOne({ sessionId });
     }
 
-    res.status(500).json({
-      error: 'AI service error',
-      message: userFriendlyMessage,
-      details: err.message
+    if (!session) {
+      sessionId = uuidv4();
+      session = new Session({
+        sessionId,
+        userId: userId || null,
+        messages: [],
+      });
+    }
+
+    // 2. Append the user message
+    session.messages.push({ role: "user", content: message });
+
+    // 3. Build history for your AI call (last 20 messages to stay within context)
+    const history = session.messages.slice(-20).map((m) => ({
+      role: m.role,
+      content: m.content,
+    }));
+
+    // 4. Call your AI / LLM here — replace with your actual AI integration
+    const aiReply = await callAI(history);   // ← your existing AI call
+
+    // 5. Append assistant reply
+    session.messages.push({ role: "assistant", content: aiReply });
+
+    // 6. Optional: update lead score / intent from AI response
+    // session.metadata.leadScore = detectLeadScore(aiReply);
+
+    // 7. Persist to MongoDB
+    await session.save();
+
+    return res.json({
+      sessionId,
+      reply: aiReply,
+      messageCount: session.messages.length,
     });
+  } catch (err) {
+    console.error("Chat route error:", err);
+    return res.status(500).json({ error: "Internal server error" });
   }
 });
 
-// Get session data
-router.get('/session/:id', (req, res) => {
-  const session = sessions.get(req.params.id);
-  if (!session) return res.status(404).json({ error: 'Session not found' });
-  res.json(session);
+/**
+ * GET /api/chat/:sessionId/history
+ * Returns full message history for a session
+ */
+router.get("/:sessionId/history", async (req, res) => {
+  try {
+    const session = await Session.findOne({ sessionId: req.params.sessionId });
+    if (!session) {
+      return res.status(404).json({ error: "Session not found" });
+    }
+    return res.json({ sessionId: session.sessionId, messages: session.messages });
+  } catch (err) {
+    console.error("History route error:", err);
+    return res.status(500).json({ error: "Internal server error" });
+  }
 });
+
+/**
+ * DELETE /api/chat/:sessionId
+ * Clears a session
+ */
+router.delete("/:sessionId", async (req, res) => {
+  try {
+    await Session.deleteOne({ sessionId: req.params.sessionId });
+    return res.json({ message: "Session cleared" });
+  } catch (err) {
+    console.error("Delete session error:", err);
+    return res.status(500).json({ error: "Internal server error" });
+  }
+});
+
+// ── Placeholder: wire in your actual AI/LLM function ──────────────────
+async function callAI(history) {
+  // Replace this with your real OpenAI / Gemini / Claude call
+  // Example with OpenAI:
+  //
+  // const { OpenAI } = require("openai");
+  // const openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
+  // const response = await openai.chat.completions.create({
+  //   model: "gpt-4o",
+  //   messages: history,
+  // });
+  // return response.choices[0].message.content;
+
+  return "AI response placeholder — wire in your LLM here.";
+}
 
 module.exports = router;

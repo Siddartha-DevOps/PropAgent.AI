@@ -11,7 +11,9 @@ const session    = require('express-session')
 
 const { createSessionStore }     = require('./services/redisService')
 const { scheduleMonthlyReports } = require('./services/monthlyReportService')
+const { connectMongo } = require("./config/db");
 
+connectMongo();
 const app  = express()
 const PORT = process.env.PORT || 5000
 

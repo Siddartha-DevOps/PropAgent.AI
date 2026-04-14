@@ -1,44 +1,36 @@
-from pydantic_settings import BaseSettings
+# app/config.py
 from functools import lru_cache
+from pydantic_settings import BaseSettings
+
 
 class Settings(BaseSettings):
-    # Supabase
-    supabase_url: str
-    supabase_service_key: str
-    database_url: str
-
-    # AI
+    # OpenAI
     openai_api_key: str
-    anthropic_api_key: str
+    embedding_model: str = "text-embedding-3-small"
+    embedding_dims: int = 1536
+    chat_model: str = "gpt-4o-mini"
 
-    # AWS
-    aws_access_key_id: str = ""
-    aws_secret_access_key: str = ""
-    aws_bucket_name: str = "propagent-pdfs"
-    aws_region: str = "ap-south-1"
+    # Supabase / Postgres (pgvector)
+    supabase_url: str
+    supabase_service_key: str          # service_role key — bypasses RLS
+    postgres_uri: str                  # direct connection for pgvector queries
 
-    # Auth
-    jwt_secret: str
-    jwt_algorithm: str = "HS256"
-    access_token_expire_minutes: int = 10080
+    # Internal auth between Node and FastAPI
+    internal_api_secret: str           # shared secret, set same in Node .env
 
-    # Redis
+    # Document processing
+    chunk_size: int = 512
+    chunk_overlap: int = 64
+    max_file_size_mb: int = 50
+
+    # Redis (job queue)
     redis_url: str = "redis://localhost:6379"
-
-    # App
-    app_env: str = "development"
-    frontend_url: str = "http://localhost:3000"
-    allowed_origins: str = "http://localhost:3000"
-
-    @property
-    def origins_list(self):
-        return [o.strip() for o in self.allowed_origins.split(",")]
 
     class Config:
         env_file = ".env"
+        extra = "ignore"
 
-@lru_cache()
-def get_settings():
+
+@lru_cache
+def get_settings() -> Settings:
     return Settings()
-
-settings = get_settings()
