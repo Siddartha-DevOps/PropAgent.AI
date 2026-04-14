@@ -1,7 +1,7 @@
 // backend/routes/analytics.js
 const express = require("express");
 const router = express.Router();
-const { pgPool } = require("../config/db");
+const { pgPool } = require("../../config/db");
 const Session = require("../models/Session");
 
 // ─── REMOVED: return { totalLeads: 47, hotLeads: 12, ... } ───

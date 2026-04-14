@@ -1,7 +1,7 @@
 // backend/routes/properties.js
 const express = require("express");
 const router = express.Router();
-const { pgPool } = require("../config/db");
+const { pgPool } = require("../../config/db");
 
 // ─── REMOVED: the hardcoded array of 7 apartments ───
 
