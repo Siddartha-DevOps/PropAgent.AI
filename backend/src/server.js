@@ -117,6 +117,7 @@ app.use('/api/payment',    authMiddleware, require('./routes/payment'))
 app.use('/api/properties', require('./routes/properties'))
 app.use('/api/notifications', authMiddleware, require('./routes/notifications'))
 app.use('/api/admin',      authMiddleware, require('./middleware/rbac').adminGate, require('./routes/admin'))
+ app.use('/api/roles', authMiddleware, require('./routes/roles'));
 
 
 // ── Root info ─────────────────────────────────────────────────

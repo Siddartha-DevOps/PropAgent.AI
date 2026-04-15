@@ -3,6 +3,17 @@ import React from 'react';
 import { Navigate, useLocation } from 'react-router-dom';
 import { useAuth } from '../../contexts/AuthContext';
 import { hasMinRole } from '../../constants/roles';
+import { RoleGuard, PermissionGuard } from './components/auth/ProtectedRoute';
+import { usePermission, useHasRole } from './hooks/usePermission';
+
+// Declarative guard
+<RoleGuard minRole="manager">
+  <ExportButton />
+</RoleGuard>
+
+// Imperative check
+const canExport = usePermission('export_leads');
+const isManager = useHasRole('manager');
 
 // ── ProtectedRoute — redirects to login if not authenticated ──────────────────
 export function ProtectedRoute({ children }) {

@@ -218,3 +218,8 @@ async function sendEmailVerification({ to, name, verifyUrl }) {
     html: baseEmail('Email Verification', body),
   });
 }
+module.exports = {
+  // ... existing exports ...
+  sendPasswordReset,
+  sendEmailVerification,
+};
