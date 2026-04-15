@@ -1,5 +1,5 @@
 import React, { useState } from 'react';
-import { useAuth } from '../context/AuthContext';
+import { useAuth } from '../contexts/AuthContext';
 
 const API = process.env.REACT_APP_API_URL || 'http://localhost:3001/api';
 

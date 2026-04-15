@@ -101,7 +101,8 @@ app.use('/api/blog',          require('./routes/blog'))
 app.use('/api/export',        require('./routes/export'))
 app.use('/api/webhooks',      require('./routes/webhooks'))
 
-/ Wrap existing protected routes:
+// Wrap existing protected routes:
+
 app.use('/api/leads',      authMiddleware, tenantScope, require('./routes/leads'))
 app.use('/api/bots',       authMiddleware, tenantScope, require('./routes/bots'))
 app.use('/api/training',   authMiddleware, tenantScope, require('./routes/training'))
