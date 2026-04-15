@@ -173,3 +173,48 @@ module.exports = {
   sendHotLeadNotification,
   transporter, // Export for testing
 };
+
+async function sendPasswordReset({ to, name, resetUrl }) {
+  const body = `
+    <p style="color:#374151">Hi ${name},</p>
+    <p style="color:#374151">We received a request to reset your PropAgent.AI password.</p>
+    <div style="text-align:center;margin:28px 0">
+      <a href="${resetUrl}" style="background:#1a56db;color:#fff;text-decoration:none;padding:13px 32px;border-radius:8px;font-weight:700;font-size:14px;display:inline-block">
+        Reset password
+      </a>
+    </div>
+    <p style="color:#6b7280;font-size:12px">
+      This link expires in 1 hour. If you didn't request a password reset, you can safely ignore this email.
+      Your password will remain unchanged.
+    </p>
+  `;
+  await transporter.sendMail({
+    from: FROM,
+    to,
+    subject: `Reset your PropAgent.AI password`,
+    html: baseEmail('Password Reset Request', body),
+  });
+}
+ 
+// ── EMAIL VERIFICATION ────────────────────────────────────────────────────────
+/**
+ * @param {{ to, name, verifyUrl }}
+ */
+async function sendEmailVerification({ to, name, verifyUrl }) {
+  const body = `
+    <p style="color:#374151">Hi ${name},</p>
+    <p style="color:#374151">Welcome to PropAgent.AI! Please verify your email address to activate your account.</p>
+    <div style="text-align:center;margin:28px 0">
+      <a href="${verifyUrl}" style="background:#1a56db;color:#fff;text-decoration:none;padding:13px 32px;border-radius:8px;font-weight:700;font-size:14px;display:inline-block">
+        Verify email address
+      </a>
+    </div>
+    <p style="color:#6b7280;font-size:12px">This link expires in 24 hours.</p>
+  `;
+  await transporter.sendMail({
+    from: FROM,
+    to,
+    subject: `Verify your PropAgent.AI email`,
+    html: baseEmail('Email Verification', body),
+  });
+}

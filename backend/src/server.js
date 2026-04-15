@@ -1,4 +1,7 @@
 require('dotenv').config()
+
+const cookieParser = require('cookie-parser');
+const passport     = require('./config/passport');
 const express    = require('express')
 const cors       = require('cors')
 const helmet     = require('helmet')
@@ -9,15 +12,22 @@ const fs         = require('fs')
 const { Pool }   = require('pg')
 const session    = require('express-session')
 
+// ── Add tenant scope + RBAC to protected routes ─────────────────────────────
+
 const { createSessionStore }     = require('./services/redisService')
 const { scheduleMonthlyReports } = require('./services/monthlyReportService')
-const { connectMongo } = require("../config/db");
+const { connectMongo } =  require("../config/db");
+const { tenantScope }   = require('./middleware/tenantIsolation');
+const { requireRole }   = require('./middleware/rbac');
+const { authMiddleware }= require('./middleware/auth');
 
 connectMongo();
 const app  = express()
 const PORT = process.env.PORT || 5000
 
 // ── Stripe webhook needs raw body BEFORE json parser ──────────
+app.use(cookieParser());
+app.use(passport.initialize());   // no sessions — JWT only
 app.use('/api/payment/stripe/webhook', express.raw({ type: 'application/json' }))
 
 // ── Security ──────────────────────────────────────────────────
@@ -73,6 +83,7 @@ app.get('/api/widget/:botId.js', (req, res) => {
 
 // ── Routes ────────────────────────────────────────────────────
 app.use('/api/auth',          require('./routes/auth'))
+app.use('/api/auth/oauth',    require('./routes/oauth'))
 app.use('/api/builder',       require('./routes/builder'))
 app.use('/api/payment',       require('./routes/payment'))
 app.use('/api/chat',          require('./routes/chat'))
@@ -89,6 +100,24 @@ app.use('/api/admin',         require('./routes/admin'))
 app.use('/api/blog',          require('./routes/blog'))
 app.use('/api/export',        require('./routes/export'))
 app.use('/api/webhooks',      require('./routes/webhooks'))
+
+/ Wrap existing protected routes:
+app.use('/api/leads',      authMiddleware, tenantScope, require('./routes/leads'))
+app.use('/api/bots',       authMiddleware, tenantScope, require('./routes/bots'))
+app.use('/api/training',   authMiddleware, tenantScope, require('./routes/training'))
+app.use('/api/analytics',  authMiddleware, tenantScope, require('./routes/analytics'))
+app.use('/api/builder',    authMiddleware, tenantScope, require('./routes/builder'))
+app.use('/api/export',     authMiddleware, tenantScope, require('./routes/export'))
+app.use('/api/team',       authMiddleware, tenantScope, require('./routes/team'))
+app.use('/api/webhooks',   authMiddleware, tenantScope, require('./routes/webhooks'))
+app.use('/api/alerts',     authMiddleware, tenantScope, require('./routes/alerts'))
+app.use('/api/blog',       require('./routes/blog'))   // public GET + authMiddleware on mutations
+app.use('/api/booking',    require('./routes/booking'))
+app.use('/api/payment',    authMiddleware, require('./routes/payment'))
+app.use('/api/properties', require('./routes/properties'))
+app.use('/api/notifications', authMiddleware, require('./routes/notifications'))
+app.use('/api/admin',      authMiddleware, require('./middleware/rbac').adminGate, require('./routes/admin'))
+
 
 // ── Root info ─────────────────────────────────────────────────
 app.get('/', (req, res) => {

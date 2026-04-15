@@ -126,8 +126,8 @@ router.get('/dashboard-stats', authMiddleware, async (req, res) => {
   try {
     const mongoose = require('mongoose');
     if (mongoose.connection.readyState === 1) {
-      const Lead = require('../models/Lead');
-      const User = require('../models/User');
+      const Lead = require('../src/models');
+      const User = require('../src/models');
       const user = await User.findById(req.userId);
       const totalLeads = await Lead.countDocuments({ builderId: req.userId });
       const hotLeads   = await Lead.countDocuments({ builderId: req.userId, classification: 'hot' });
