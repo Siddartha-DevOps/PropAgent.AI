@@ -1,5 +1,6 @@
 import React, { useEffect, useState } from 'react'
 import axios from 'axios'
+import { getAccessToken } from '../../services/api';
 
 const API = process.env.REACT_APP_API_URL || 'http://localhost:5000'
 const STATUSES = ['new','contacted','qualified','converted','lost']
@@ -10,6 +11,7 @@ export default function LeadsPage() {
   const [loading, setLoading] = useState(true)
   const [filter, setFilter] = useState({ botId:'', intent:'', status:'' })
   const [exporting, setExporting] = useState(false)
+  const token = getAccessToken();
 
   useEffect(() => {
     const token = localStorage.getItem('token')

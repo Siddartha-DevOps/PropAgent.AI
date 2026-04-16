@@ -1,4 +1,5 @@
 // frontend/src/contexts/AuthContext.jsx
+
 import React, { createContext, useContext, useEffect, useState, useCallback, useRef } from 'react';
 import AuthService from '../services/authService';
 import { setAccessToken, clearAccessToken } from '../services/api';
@@ -7,127 +8,287 @@ import { hasMinRole } from '../constants/roles';
 const AuthContext = createContext(null);
 
 export function AuthProvider({ children }) {
-  const [user,        setUser]        = useState(null);
-  const [loading,     setLoading]     = useState(true);  // initial check
-  const [authReady,   setAuthReady]   = useState(false);
-  const refreshTimer  = useRef(null);
 
-  // ── Bootstrap: try silent refresh on app load ─────────────────────────────
+  const [user, setUser] = useState(null);
+  const [loading, setLoading] = useState(true);
+  const [authReady, setAuthReady] = useState(false);
+
+  const refreshTimer = useRef(null);
+
+  // ─────────────────────────────────────────────────────────
+  // Bootstrap authentication on app load
+  // ─────────────────────────────────────────────────────────
   useEffect(() => {
-    _bootstrap();
-    // Listen for session expiry emitted by axios interceptor
-    window.addEventListener('auth:expired', _handleExpiry);
+
+    bootstrapAuth();
+
+    window.addEventListener('auth:expired', handleExpiry);
+
     return () => {
-      window.removeEventListener('auth:expired', _handleExpiry);
+      window.removeEventListener('auth:expired', handleExpiry);
       clearTimeout(refreshTimer.current);
     };
+
   }, []);
 
-  async function _bootstrap() {
+  // ─────────────────────────────────────────────────────────
+  // Bootstrap session
+  // ─────────────────────────────────────────────────────────
+  async function bootstrapAuth() {
+
     try {
-      // Attempt silent refresh — uses the HttpOnly refresh cookie
+
       const res = await AuthService.refreshToken();
-      setAccessToken(res.data.accessToken);
-      setUser(res.data.user);
-      _scheduleRefresh();
-    } catch (_) {
-      // No valid session — user needs to log in
+
+      if (res && res.data && res.data.accessToken) {
+
+        setAccessToken(res.data.accessToken);
+        setUser(res.data.user);
+
+        scheduleRefresh();
+
+      } else {
+
+        clearAccessToken();
+        setUser(null);
+
+      }
+
+    } catch (err) {
+
       clearAccessToken();
       setUser(null);
+
     } finally {
+
       setLoading(false);
       setAuthReady(true);
+
     }
   }
 
-  function _handleExpiry() {
+  // ─────────────────────────────────────────────────────────
+  // Handle expired session
+  // ─────────────────────────────────────────────────────────
+  function handleExpiry() {
+
     clearAccessToken();
     setUser(null);
+
   }
 
-  // ── Schedule proactive refresh 1 min before access token expires (14 min) ──
-  function _scheduleRefresh() {
+  // ─────────────────────────────────────────────────────────
+  // Schedule token refresh (before expiry)
+  // ─────────────────────────────────────────────────────────
+  function scheduleRefresh() {
+
     clearTimeout(refreshTimer.current);
+
     refreshTimer.current = setTimeout(async () => {
+
       try {
+
         const res = await AuthService.refreshToken();
-        setAccessToken(res.data.accessToken);
-        setUser(res.data.user);
-        _scheduleRefresh();
-      } catch (_) {
+
+        if (res && res.data && res.data.accessToken) {
+
+          setAccessToken(res.data.accessToken);
+          setUser(res.data.user);
+
+          scheduleRefresh();
+
+        } else {
+
+          clearAccessToken();
+          setUser(null);
+
+        }
+
+      } catch (err) {
+
         clearAccessToken();
         setUser(null);
+
       }
-    }, 14 * 60 * 1000); // 14 minutes
+
+    }, 14 * 60 * 1000);
+
   }
 
-  // ── Login ─────────────────────────────────────────────────────────────────
+  // ─────────────────────────────────────────────────────────
+  // Login
+  // ─────────────────────────────────────────────────────────
   const login = useCallback(async (email, password) => {
+
     const res = await AuthService.login(email, password);
-    setAccessToken(res.data.accessToken);
-    setUser(res.data.user);
-    _scheduleRefresh();
+
+    if (res && res.data && res.data.accessToken) {
+
+      setAccessToken(res.data.accessToken);
+      setUser(res.data.user);
+
+      scheduleRefresh();
+
+    }
+
     return res.data;
+
   }, []);
 
-  // ── Register ──────────────────────────────────────────────────────────────
+  // ─────────────────────────────────────────────────────────
+  // Register
+  // ─────────────────────────────────────────────────────────
   const register = useCallback(async (data) => {
+
     const res = await AuthService.register(data);
-    setAccessToken(res.data.accessToken);
-    setUser(res.data.user);
-    _scheduleRefresh();
+
+    if (res && res.data && res.data.accessToken) {
+
+      setAccessToken(res.data.accessToken);
+      setUser(res.data.user);
+
+      scheduleRefresh();
+
+    }
+
     return res.data;
+
   }, []);
 
-  // ── Google OAuth (redirect-based) ─────────────────────────────────────────
+  // ─────────────────────────────────────────────────────────
+  // Google login
+  // ─────────────────────────────────────────────────────────
   const loginWithGoogle = useCallback(() => {
+
     window.location.href = AuthService.googleAuthUrl();
+
   }, []);
 
-  // ── Handle OAuth callback token (called from GoogleCallback page) ──────────
+  // ─────────────────────────────────────────────────────────
+  // OAuth callback handler
+  // ─────────────────────────────────────────────────────────
   const handleOAuthToken = useCallback(async (accessToken) => {
+
+    if (!accessToken) return;
+
     setAccessToken(accessToken);
+
     const res = await AuthService.getMe();
-    setUser(res.data.user);
-    _scheduleRefresh();
-    return res.data.user;
+
+    if (res && res.data && res.data.user) {
+
+      setUser(res.data.user);
+      scheduleRefresh();
+
+      return res.data.user;
+
+    }
+
   }, []);
 
-  // ── Logout ────────────────────────────────────────────────────────────────
+  // ─────────────────────────────────────────────────────────
+  // Logout
+  // ─────────────────────────────────────────────────────────
   const logout = useCallback(async () => {
-    try { await AuthService.logout(); } catch (_) {}
+
+    try {
+
+      await AuthService.logout();
+
+    } catch (err) {}
+
     clearAccessToken();
+
     clearTimeout(refreshTimer.current);
+
     setUser(null);
+
   }, []);
 
-  // ── Update user in state (after profile edit etc.) ───────────────────────
+  // ─────────────────────────────────────────────────────────
+  // Update user locally
+  // ─────────────────────────────────────────────────────────
   const updateUser = useCallback((updates) => {
-    setUser((u) => u ? { ...u, ...updates } : u);
+
+    setUser((current) => {
+
+      if (!current) return current;
+
+      return {
+        ...current,
+        ...updates
+      };
+
+    });
+
   }, []);
 
-  // ── Permission helpers ────────────────────────────────────────────────────
-  const isRole     = (role) => user?.role === role;
-  const hasRole    = (minRole) => user ? hasMinRole(user.role, minRole) : false;
+  // ─────────────────────────────────────────────────────────
+  // Permission helpers
+  // ─────────────────────────────────────────────────────────
+  const isRole = (role) => user?.role === role;
+
+  const hasRole = (minRole) => {
+
+    if (!user) return false;
+
+    return hasMinRole(user.role, minRole);
+
+  };
+
   const isLoggedIn = !!user;
 
+  // ─────────────────────────────────────────────────────────
+  // Context value
+  // ─────────────────────────────────────────────────────────
   const value = {
-    user, loading, authReady, isLoggedIn,
-    login, register, logout, loginWithGoogle, handleOAuthToken, updateUser,
-    isRole, hasRole,
+
+    user,
+    loading,
+    authReady,
+    isLoggedIn,
+
+    login,
+    register,
+    logout,
+
+    loginWithGoogle,
+    handleOAuthToken,
+
+    updateUser,
+
+    isRole,
+    hasRole
+
   };
 
   return (
+
     <AuthContext.Provider value={value}>
+
       {children}
+
     </AuthContext.Provider>
+
   );
+
 }
 
+// ─────────────────────────────────────────────────────────
+// Hook
+// ─────────────────────────────────────────────────────────
 export function useAuth() {
+
   const ctx = useContext(AuthContext);
-  if (!ctx) throw new Error('useAuth must be used inside <AuthProvider>');
+
+  if (!ctx) {
+
+    throw new Error('useAuth must be used inside <AuthProvider>');
+
+  }
+
   return ctx;
+
 }
 
 export default AuthContext;

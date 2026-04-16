@@ -1,6 +1,8 @@
 import React, { useEffect, useState } from 'react'
 import { useParams, useNavigate } from 'react-router-dom'
 import axios from 'axios'
+import { getAccessToken } from '../../services/api';
+
 
 const API = process.env.REACT_APP_API_URL || 'http://localhost:5000'
 
@@ -9,6 +11,7 @@ export default function EmbedPage() {
   const navigate  = useNavigate()
   const [bot, setBot]       = useState(null)
   const [copied, setCopied] = useState(null)
+  const token = getAccessToken();
 
   useEffect(() => {
     const token = localStorage.getItem('token')

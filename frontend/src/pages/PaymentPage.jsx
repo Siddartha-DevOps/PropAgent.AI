@@ -1,5 +1,6 @@
 import React, { useState, useEffect } from 'react';
 import { useAuth } from '../contexts/AuthContext';
+import { getAccessToken } from '../services/api';
 
 const API = process.env.REACT_APP_API_URL || 'http://localhost:3001/api';
 
@@ -15,6 +16,7 @@ export default function PaymentPage({ onSuccess, onBack }) {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');
   const [success, setSuccess] = useState(false);
+  const { user, updateUser } = useAuth();
 
   const S = {
     wrap: { minHeight:'100vh', background:'#FAF8F3', display:'flex', alignItems:'center', justifyContent:'center', padding:'24px', fontFamily:"'Outfit',sans-serif" },

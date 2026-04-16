@@ -1,6 +1,6 @@
 // frontend/src/hooks/usePermission.js
 // Convenience hooks for role and permission checks in components
-import { useAuth } from '../context/AuthContext';
+import { useAuth } from '../contexts/AuthContext';
 import { hasMinRole, ROLE_LEVELS } from '../constants/roles';
 
 const DEFAULT_PERMISSIONS = {

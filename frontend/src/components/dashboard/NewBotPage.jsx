@@ -1,6 +1,7 @@
 import React, { useState } from 'react'
 import { useNavigate } from 'react-router-dom'
 import axios from 'axios'
+import { getAccessToken } from '../../services/api';
 
 const API = process.env.REACT_APP_API_URL || 'http://localhost:5000'
 const COLORS = ['#1a56db','#059669','#7c3aed','#dc2626','#ea580c','#0891b2','#db2777']
@@ -8,6 +9,7 @@ const COLORS = ['#1a56db','#059669','#7c3aed','#dc2626','#ea580c','#0891b2','#db
 export default function NewBotPage() {
   const navigate = useNavigate()
   const [loading, setLoading] = useState(false)
+  const token = getAccessToken();
   const [error, setError]     = useState('')
   const [form, setForm] = useState({
     name:'', description:'', primaryColor:'#1a56db',

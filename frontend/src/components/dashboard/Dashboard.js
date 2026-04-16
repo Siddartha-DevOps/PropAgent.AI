@@ -9,6 +9,8 @@ import AnalyticsPage              from './AnalyticsPage'
 import BotCustomizePage           from './BotCustomizePage'
 import ConversationHistoryPage    from './ConversationHistoryPage'
 import PropAgentLogo              from '../PropAgentLogo'
+import { getAccessToken } from '../../services/api';
+
 
 const API = process.env.REACT_APP_API_URL || 'http://localhost:5000'
 
@@ -24,7 +26,7 @@ export default function Dashboard() {
   const [user, setUser] = useState(null)
   const [activePage, setActivePage]       = useState('bots');
   const [selectedBotId, setSelectedBotId] = useState(null);
-  const token = localStorage.getItem('token')
+  const token = getAccessToken();
 
   useEffect(() => {
     try { setUser(JSON.parse(localStorage.getItem('user') || '{}')) } catch {}
@@ -33,7 +35,7 @@ export default function Dashboard() {
   function logout() {
     localStorage.removeItem('token')
     localStorage.removeItem('user')
-    navigate('/login')
+    navigate('/auth/login')
   }
 
   const initials = user?.name
@@ -88,13 +90,13 @@ export default function Dashboard() {
         )}
         {activePage !== 'customize' && activePage !== 'history' && (
           <Routes>
-            <Route path="/"                  element={<OverviewPage user={user} />} />
-            <Route path="/bots"              element={<BotsPage />} />
-            <Route path="/bots/new"          element={<NewBotPage />} />
-            <Route path="/bots/:botId/train" element={<TrainPage />} />
-            <Route path="/bots/:botId/embed" element={<EmbedPage />} />
-            <Route path="/leads"             element={<LeadsPage />} />
-            <Route path="/analytics"         element={<AnalyticsPage />} />
+            <Route index                     element={<OverviewPage user={user} />} />
+            <Route path="bots"               element={<BotsPage />} />
+            <Route path="bots/new"           element={<NewBotPage />} />
+            <Route path="bots/:botId/train"  element={<TrainPage />} />
+            <Route path="bots/:botId/embed"  element={<EmbedPage />} />
+            <Route path="leads"              element={<LeadsPage />} />
+            <Route path="analytics"          element={<AnalyticsPage />} />
           </Routes>
         )}
       </main>

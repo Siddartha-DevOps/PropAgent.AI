@@ -1,6 +1,8 @@
 import React, { useEffect, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
 import axios from 'axios'
+import { getAccessToken } from '../../services/api';
+
 
 const API = process.env.REACT_APP_API_URL || 'http://localhost:5000'
 
@@ -9,6 +11,7 @@ export default function BotsPage() {
   const [loading, setLoading] = useState(true)
   const [copied, setCopied] = useState(null)
   const navigate = useNavigate()
+  const token = getAccessToken();
 
   useEffect(() => {
     const token = localStorage.getItem('token')

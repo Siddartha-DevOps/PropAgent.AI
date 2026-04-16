@@ -1,5 +1,6 @@
 import React, { useState, useEffect } from 'react';
 import axios from 'axios';
+import { getAccessToken } from '../../services/api';
 
 const API = process.env.REACT_APP_API_URL || 'http://localhost:5000/api';
 
@@ -8,6 +9,7 @@ export default function BotCustomizePage({ botId, token, onBack }) {
   const [saving, setSaving] = useState(false);
   const [saved, setSaved]   = useState(false);
   const [error, setError]   = useState('');
+  
   const [form, setForm]     = useState({
     name: '', description: '', primaryColor: '#1a56db',
     welcomeMessage: '', placeholder: '', systemPrompt: '',

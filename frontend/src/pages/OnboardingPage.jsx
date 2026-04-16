@@ -1,7 +1,11 @@
 import React, { useState } from 'react';
 import { useAuth } from '../contexts/AuthContext';
+import { getAccessToken } from '../services/api';
+import { useNavigate } from "react-router-dom";
 
-const API = process.env.REACT_APP_API_URL || 'http://localhost:3001/api';
+const API = process.env.REACT_APP_API_URL || 'http://localhost:5001/api';
+
+const API_HEADERS = { Authorization: `Bearer ${getAccessToken()}` };
 
 const STEPS = [
   { id: 1, title: 'Your Project',     sub: 'Tell us about your real estate project' },
@@ -20,12 +24,16 @@ const PROPERTY_TYPES = ['1BHK','2BHK','3BHK','4BHK','Villa','Plot','Penthouse','
 const LOCATIONS_HYD  = ['Banjara Hills','Jubilee Hills','Gachibowli','Kondapur','Manikonda','Kompally','Kukatpally','Miyapur','Madhapur','Financial District'];
 
 export default function OnboardingPage({ onComplete, onBack }) {
-  const { token, updateUser } = useAuth();
+  const {updateUser } = useAuth();
   const [step, setStep] = useState(1);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');
   const [apiKey, setApiKey] = useState('');
   const [selectedPlan, setSelectedPlan] = useState('starter');
+  const token = getAccessToken();
+  const navigate = useNavigate();
+
+
 
   const [form, setForm] = useState({
     projectName: '', projectCity: '', website: '',
@@ -78,6 +86,14 @@ export default function OnboardingPage({ onComplete, onBack }) {
     } finally {
       setLoading(false);
     }
+  }
+
+  function handleComplete(wantsPaidFlow = false) {
+    if (typeof onComplete === 'function') {
+      onComplete(wantsPaidFlow);
+      return;
+    }
+    navigate('/dashboard');
   }
 
   return (
@@ -209,10 +225,10 @@ export default function OnboardingPage({ onComplete, onBack }) {
               <div style={S.code}>{`<script>\n  window.PROPAGENT_CONFIG = {\n    apiKey: "${apiKey}"\n  };\n</script>\n<script src="https://cdn.propagent.ai/widget.js" async></script>`}</div>
             </div>
 
-            <button style={S.btn} onClick={() => onComplete(selectedPlan !== 'starter')}>
+            <button style={S.btn} onClick={() => handleComplete(selectedPlan !== 'starter')}>
               {selectedPlan === 'starter' ? 'Go to Dashboard →' : 'Continue to Payment →'}
             </button>
-            <button style={{ ...S.btnOut, marginTop:8 }} onClick={() => onComplete(false)}>
+            <button style={{ ...S.btnOut, marginTop:8 }} onClick={() => handleComplete(false)}>
               Try the Demo First
             </button>
           </div>

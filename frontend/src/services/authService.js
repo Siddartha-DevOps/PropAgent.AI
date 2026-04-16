@@ -22,7 +22,7 @@ const AuthService = {
 
   // Returns the Google OAuth initiation URL
   googleAuthUrl: () =>
-    `${import.meta.env.VITE_API_URL || ''}/api/auth/oauth/google`,
+    `${process.env.REACT_APP_API_URL || ''}/api/auth/oauth/google`,
 };
 
 export default AuthService;

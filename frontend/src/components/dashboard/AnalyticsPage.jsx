@@ -2,6 +2,7 @@ import React, { useEffect, useState } from 'react'
 import axios from 'axios'
 import { LineChart, Line, BarChart, Bar, PieChart, Pie, Cell,
          XAxis, YAxis, Tooltip, ResponsiveContainer, CartesianGrid } from 'recharts'
+import { getAccessToken } from '../../services/api';         
 
 const API = process.env.REACT_APP_API_URL || 'http://localhost:5000'
 
@@ -14,6 +15,7 @@ export default function AnalyticsPage() {
   const [bots, setBots]   = useState([])
   const [leads, setLeads] = useState([])
   const [loading, setLoading] = useState(true)
+  const token = getAccessToken();
 
   useEffect(() => {
     const token = localStorage.getItem('token')
