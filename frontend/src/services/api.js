@@ -6,13 +6,27 @@
 
 import axios from 'axios';
 
-const BASE_URL = process.env.REACT_APP_API_URL || 'http://localhost:5000';
-// In-memory token store — never localStorage for access tokens
-let _accessToken = null;
+const BASE_URL = (process.env.REACT_APP_API_URL || 'http://localhost:5001') + '/api';
+// In-memory token store with localStorage fallback for dashboard compatibility
+let _accessToken = localStorage.getItem('token') || null;
 
-export function setAccessToken(token) { _accessToken = token; }
-export function getAccessToken()      { return _accessToken; }
-export function clearAccessToken()    { _accessToken = null; }
+export function setAccessToken(token) {
+  _accessToken = token;
+  if (token) {
+    localStorage.setItem('token', token);
+  } else {
+    localStorage.removeItem('token');
+  }
+}
+
+export function getAccessToken() {
+  return _accessToken || localStorage.getItem('token');
+}
+
+export function clearAccessToken() {
+  _accessToken = null;
+  localStorage.removeItem('token');
+}
 
 const api = axios.create({
   baseURL:        BASE_URL,

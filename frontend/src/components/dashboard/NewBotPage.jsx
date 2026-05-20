@@ -3,7 +3,7 @@ import { useNavigate } from 'react-router-dom'
 import axios from 'axios'
 import { getAccessToken } from '../../services/api';
 
-const API = process.env.REACT_APP_API_URL || 'http://localhost:5000'
+const API = process.env.REACT_APP_API_URL || 'http://localhost:5001'
 const COLORS = ['#1a56db','#059669','#7c3aed','#dc2626','#ea580c','#0891b2','#db2777']
 
 export default function NewBotPage() {

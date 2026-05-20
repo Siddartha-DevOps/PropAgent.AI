@@ -12,7 +12,7 @@ import PropAgentLogo              from '../PropAgentLogo'
 import { getAccessToken } from '../../services/api';
 
 
-const API = process.env.REACT_APP_API_URL || 'http://localhost:5000'
+const API = process.env.REACT_APP_API_URL || 'http://localhost:5001'
 
 const NAV = [
   { to:'/dashboard',           label:'🏠 Overview',   end:true },
@@ -194,3 +194,4 @@ const S = {
   avatar:     { width:32, height:32, borderRadius:'50%', background:'linear-gradient(135deg,#1a56db,#3b82f6)', color:'#fff', display:'flex', alignItems:'center', justifyContent:'center', fontSize:12, fontWeight:700, flexShrink:0 },
   main:       { flex:1, overflowY:'auto' },
 }
+

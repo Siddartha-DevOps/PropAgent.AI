@@ -4,7 +4,7 @@ import { LineChart, Line, BarChart, Bar, PieChart, Pie, Cell,
          XAxis, YAxis, Tooltip, ResponsiveContainer, CartesianGrid } from 'recharts'
 import { getAccessToken } from '../../services/api';         
 
-const API = process.env.REACT_APP_API_URL || 'http://localhost:5000'
+const API = process.env.REACT_APP_API_URL || 'http://localhost:5001'
 
 function daysAgo(n) {
   const d = new Date(); d.setDate(d.getDate() - n)
